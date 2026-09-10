@@ -9,7 +9,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "npx nodemon server.js",
     "start": "node server.js",
-    "build": "nmp run build"
+    "build": "npm run build"
   },
   "keywords": [],
   "author": "",
