@@ -2,6 +2,8 @@
 
 SyncStudio is a real-time collaborative code editor built with React, Monaco Editor, Yjs, and Socket.IO. Multiple users can join the same room, see who is online, and edit JavaScript code together.
 
+Live app: https://sync-studio-sooty.vercel.app/
+
 ## Features
 
 - Real-time collaborative editing
@@ -65,6 +67,44 @@ npm run dev
 ```
 
 Open the URL shown by Vite, usually `http://localhost:5173`.
+
+## Deployment
+
+### Backend on Render
+
+Create a **Web Service** from this repository. Use these settings:
+
+```text
+Root Directory: Backend
+Build Command: npm install
+Start Command: npm start
+```
+
+Add this environment variable after the Vercel frontend is created:
+
+```text
+CLIENT_ORIGIN=https://your-app.vercel.app
+```
+
+Render provides `PORT` automatically. Use a Web Service, not a static site, because Socket.IO and Yjs need a long-running server.
+
+### Frontend on Vercel
+
+Import the same repository and set:
+
+```text
+Root Directory: Frontend
+Build Command: npm run build
+Output Directory: dist
+```
+
+Add this Vercel environment variable:
+
+```text
+VITE_CONNECT=https://your-backend.onrender.com
+```
+
+Replace both placeholder URLs with the real Render and Vercel URLs, then redeploy the backend after setting `CLIENT_ORIGIN`.
 
 ## Available Scripts
 

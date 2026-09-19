@@ -7,9 +7,12 @@ import {YSocketIO} from "y-socket.io/dist/server";
 const app = express();
 const httpServer = createServer(app);
 
+const port = Number(process.env.PORT) || 3000;
+const clientOrigin = process.env.CLIENT_ORIGIN || "*";
+
 const io = new Server(httpServer, {
   cors: {
-    origin: "*",
+    origin: clientOrigin,
   },
 });
 
@@ -31,6 +34,6 @@ ySocketIO.initialize();
 
 
 
-httpServer.listen(3000, () => {
-  console.log('Server is running on port 3000');
+httpServer.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
 });
