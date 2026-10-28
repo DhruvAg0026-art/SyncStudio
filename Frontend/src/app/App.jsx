@@ -101,7 +101,7 @@ function App() {
 
   if (!username) {
     return (
-      <main className="h-screen w-full bg-gray-950 flex p-4 items-center justify-center">
+      <main className="app-login h-screen w-full bg-gray-950 flex p-4 items-center justify-center">
         <form onSubmit={handleJoin} className="flex flex-col gap-4 w-full max-w-xs">
           <h1 className="text-3xl font-bold text-amber-50">SyncStudio</h1>
           <p className="text-sm text-gray-400 -mt-2">
@@ -160,11 +160,11 @@ function App() {
   )
 
   return (
-    <main className="h-screen w-full bg-gray-950 flex flex-col gap-3 p-4">
+    <main className="app-shell h-screen w-full bg-gray-950 flex flex-col gap-3 p-4">
 
       {/* HEADER */}
 
-      <header className="no-print flex flex-wrap items-center gap-3 text-white">
+      <header className="app-header no-print flex flex-wrap items-center gap-3 text-white">
         <h1 className="text-xl font-bold text-amber-50">SyncStudio</h1>
 
         <span className="px-2 py-1 rounded bg-gray-800 text-sm">
@@ -178,7 +178,7 @@ function App() {
 
         <span className="text-sm text-gray-400 md:hidden">{users.length} online</span>
 
-        <div className="ml-auto flex items-center gap-3">
+        <div className="app-header-actions ml-auto flex items-center gap-3">
           <div className="flex rounded-lg overflow-hidden border border-gray-700">
             {tab("doc", "Doc")}
             {tab("code", "Code")}
@@ -194,11 +194,11 @@ function App() {
         </div>
       </header>
 
-      <div className="flex flex-1 min-h-0 gap-4">
+      <div className="app-workspace flex flex-1 min-h-0 gap-4">
 
         {/* USERS */}
 
-        <aside className="no-print hidden md:block h-full w-56 shrink-0 bg-amber-50 rounded-lg overflow-auto">
+        <aside className="app-users no-print hidden md:block h-full w-56 shrink-0 bg-amber-50 rounded-lg overflow-auto">
           <h2 className="text-xl font-bold p-4 border-b border-gray-300">
             Users ({users.length})
           </h2>
@@ -222,7 +222,7 @@ function App() {
 
         {/* EDITOR */}
 
-        <section className="flex-1 min-w-0 bg-neutral-800 rounded-lg overflow-hidden">
+        <section className="app-editor flex-1 min-w-0 bg-neutral-800 rounded-lg overflow-hidden">
           {!session ? (
             loading
           ) : (

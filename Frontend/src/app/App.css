@@ -1,5 +1,116 @@
 @import "tailwindcss";
 
+/* ---------- Responsive app and code editor ---------- */
+
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+
+.app-shell {
+  height: 100vh;
+  height: 100dvh;
+  box-sizing: border-box;
+}
+
+.app-login {
+  min-height: 100vh;
+  min-height: 100dvh;
+  box-sizing: border-box;
+}
+
+.code-editor-shell {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.code-editor-toolbar {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  color: #d1d5db;
+  background: #111827;
+  border-bottom: 1px solid #374151;
+  font-size: 13px;
+}
+
+.code-editor-toolbar select {
+  max-width: 100%;
+  padding: 5px 28px 5px 8px;
+  color: #f9fafb;
+  background: #1f2937;
+  border: 1px solid #4b5563;
+  border-radius: 6px;
+}
+
+.code-language-hint {
+  margin-left: auto;
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.code-editor-canvas {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+@media (max-width: 640px) {
+  .app-shell {
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .app-header {
+    gap: 8px;
+  }
+
+  .app-header-actions {
+    width: 100%;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .app-header-actions > button {
+    min-width: 0;
+    padding-inline: 9px;
+    font-size: 12px;
+  }
+
+  .app-workspace {
+    gap: 0;
+  }
+
+  .app-editor {
+    border-radius: 8px;
+  }
+
+  .code-editor-toolbar {
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    padding: 6px 8px;
+  }
+
+  .code-language-hint {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .doc-content {
+    padding: 32px 20px;
+  }
+}
+
 /* ---------- Document page ---------- */
 
 .doc-page {
