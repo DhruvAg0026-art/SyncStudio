@@ -20,6 +20,7 @@
     "@tiptap/starter-kit": "^3.32.0",
     "@tiptap/y-tiptap": "^3.0.10",
     "dotenv": "^17.4.2",
+    "firebase": "^13.2.0",
     "monaco-editor": "^0.55.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

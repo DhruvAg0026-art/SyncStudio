@@ -8,23 +8,50 @@ const COLORS = [
 ]
 const SESSION_TOKEN_KEY = "syncstudio-session-token"
 
-async function getSessionToken() {
-  const storageKey = SESSION_TOKEN_KEY
+function readTokenExpiry(token) {
+  try {
+    const encoded = token.split(".")[0].replace(/-/g, "+").replace(/_/g, "/")
+    const padded = encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=")
+    const binary = atob(padded)
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
+    return Number(JSON.parse(new TextDecoder().decode(bytes)).exp) || 0
+  } catch {
+    return 0
+  }
+}
+
+export async function getSessionToken(firebaseUser = null) {
+  const storageKey = firebaseUser ? `${SESSION_TOKEN_KEY}:${firebaseUser.uid}` : SESSION_TOKEN_KEY
   let token = ""
+  let expiresAt = 0
   try {
     token = localStorage.getItem(storageKey) || ""
+    expiresAt = Number(localStorage.getItem(`${storageKey}:expiresAt`)) || 0
+    if (token && !expiresAt) {
+      expiresAt = readTokenExpiry(token)
+      if (expiresAt) localStorage.setItem(`${storageKey}:expiresAt`, String(expiresAt))
+    }
   } catch {
-    // Request a short-lived session if browser storage is unavailable.
+    // Request a fresh session if browser storage is unavailable.
   }
-  if (token) return token
+  if (token && expiresAt > Date.now() + 60_000) return token
 
   const baseUrl = import.meta.env.VITE_CONNECT.replace(/\/+$/, "")
-  const response = await fetch(`${baseUrl}/api/session`, { method: "POST" })
-  if (!response.ok) throw new Error("Could not create a room session.")
+  const body = firebaseUser ? { idToken: await firebaseUser.getIdToken() } : {}
+  const response = await fetch(`${baseUrl}/api/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.error || "Could not create a room session.")
+  }
   const data = await response.json()
   if (typeof data.token !== "string") throw new Error("The server returned an invalid room session.")
   try {
     localStorage.setItem(storageKey, data.token)
+    localStorage.setItem(`${storageKey}:expiresAt`, String(data.expiresAt || Date.now() + 29 * 24 * 60 * 60 * 1000))
   } catch {
     // The session remains usable until this page is closed.
   }
@@ -44,7 +71,7 @@ export function colorFor(name) {
 //   ydoc.getText("monaco")        -> code editor content
 //   ydoc.getXmlFragment("doc")    -> rich-text document content
 //   ydoc.getText("title")         -> document title
-export function useCollab(room, username, color = colorFor(username || "")) {
+export function useCollab(room, username, color = colorFor(username || ""), firebaseUser = null) {
   const [session, setSession] = useState(null)
   const [users, setUsers] = useState([])
   const [status, setStatus] = useState("connecting")
@@ -52,8 +79,11 @@ export function useCollab(room, username, color = colorFor(username || "")) {
   const [ownerId, setOwnerId] = useState(null)
   const [roomNotice, setRoomNotice] = useState("")
   const hasUsername = Boolean(username)
+  const joinedRoomRef = useRef(false)
   const profileRef = useRef({ username, color })
+  const firebaseUserRef = useRef(firebaseUser)
   profileRef.current = { username, color }
+  firebaseUserRef.current = firebaseUser
 
   useEffect(() => {
     if (!room || !hasUsername) return
@@ -72,7 +102,7 @@ export function useCollab(room, username, color = colorFor(username || "")) {
 
     const connect = async () => {
       try {
-        const sessionToken = await getSessionToken()
+        const sessionToken = await getSessionToken(firebaseUserRef.current)
         if (!active) return
 
         ydoc = new Y.Doc()
@@ -149,7 +179,16 @@ export function useCollab(room, username, color = colorFor(username || "")) {
               setRoomNotice(response.error)
               return
             }
+            if (response?.warning) setRoomNotice(response.warning)
+            joinedRoomRef.current = true
             onRoomState(response.state)
+            const member = response.state?.members?.find((item) => item.socketId === provider.socket.id)
+            if (member) {
+              provider.awareness.setLocalStateField("user", { name: member.name, color: member.color })
+              setSession((current) => current?.provider === provider
+                ? { ...current, user: { name: member.name, color: member.color } }
+                : current)
+            }
           })
         }
         onKicked = () => setRoomNotice("You were removed from this room by its owner.")
@@ -184,6 +223,7 @@ export function useCollab(room, username, color = colorFor(username || "")) {
     connect()
     return () => {
       active = false
+      joinedRoomRef.current = false
       if (provider) {
         provider.awareness.off("change", onAwareness)
         provider.off("status", onStatus)
@@ -203,7 +243,7 @@ export function useCollab(room, username, color = colorFor(username || "")) {
       setStatus("connecting")
       setRoomNotice("")
     }
-  }, [room, hasUsername])
+  }, [room, hasUsername, firebaseUser?.uid])
 
   const provider = session?.provider
 
@@ -211,15 +251,25 @@ export function useCollab(room, username, color = colorFor(username || "")) {
     if (!provider) return
     const user = { name: username, color }
     provider.awareness.setLocalStateField("user", user)
-    provider.socket.emit("room:update-profile", user)
-    setSession((current) => current?.provider === provider
-      ? { ...current, user }
-      : current)
+    if (!joinedRoomRef.current) return
+    provider.socket.emit("room:update-profile", user, (response) => {
+      if (response?.error) {
+        setRoomNotice(response.error)
+        return
+      }
+      const assignedUser = { name: response.name, color: response.color }
+      provider.awareness.setLocalStateField("user", assignedUser)
+      setSession((current) => current?.provider === provider
+        ? { ...current, user: assignedUser }
+        : current)
+    })
   }, [provider, username, color])
 
   const leaveRoom = () => provider?.socket.emit("room:leave")
   const kickMember = (socketId) => provider?.socket.emit("room:kick", socketId)
-  const deleteRoom = () => provider?.socket.emit("room:delete")
+  const deleteRoom = () => provider?.socket.emit("room:delete", (response) => {
+    if (response?.error) setRoomNotice(response.error)
+  })
 
   return { session, users, status, members, ownerId, roomNotice, leaveRoom, kickMember, deleteRoom }
 }

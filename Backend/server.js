@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { randomUUID, createHmac, timingSafeEqual } from "crypto";
+import { randomUUID, randomInt, createHmac, timingSafeEqual } from "crypto";
 import express from "express";
 import { createServer } from "http";
 import cors from "cors";
@@ -8,6 +8,9 @@ import { rateLimit } from "express-rate-limit";
 import { Server } from "socket.io";
 import * as Y from "yjs";
 import { YSocketIO } from "y-socket.io/dist/server";
+import { getApps, initializeApp, cert } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
+import { FieldValue, getFirestore } from "firebase-admin/firestore";
 
 const app = express();
 const httpServer = createServer(app);
@@ -34,6 +37,20 @@ const log = (level, event, details = {}) => {
   const write = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
   write(JSON.stringify({ timestamp: new Date().toISOString(), level, event, ...details }));
 };
+
+let firebaseAuth = null;
+let firestore = null;
+if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  const adminApp = getApps().length
+    ? getApps()[0]
+    : initializeApp({
+      credential: cert(serviceAccount),
+      projectId: process.env.FIREBASE_PROJECT_ID || serviceAccount.project_id,
+    });
+  firebaseAuth = getAuth(adminApp);
+  firestore = getFirestore(adminApp);
+}
 
 app.disable("x-powered-by");
 app.use(helmet());
@@ -84,6 +101,13 @@ const sessionLimit = rateLimit({
   legacyHeaders: false,
 });
 
+const createRoomLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+});
+
 app.get("/", (_req, res) => {
   res.status(200).json({ message: "Hello World!", success: true });
 });
@@ -92,11 +116,169 @@ app.get("/health", (_req, res) => {
   res.status(200).json({ message: "Server is healthy", success: true });
 });
 
-app.post("/api/session", sessionLimit, (_req, res) => {
-  const userId = randomUUID();
-  res.status(201).json({
-    token: signPayload({ sub: userId, exp: Date.now() + 30 * 24 * 60 * 60 * 1000 }),
+app.post("/api/session", sessionLimit, async (req, res) => {
+  let userId = randomUUID();
+  let provider = "guest";
+  if (req.body?.idToken !== undefined) {
+    if (typeof req.body.idToken !== "string" || !req.body.idToken) {
+      return res.status(400).json({ error: "A valid Firebase ID token is required." });
+    }
+    if (!firebaseAuth) {
+      return res.status(503).json({ error: "Google sign-in is not configured on the backend." });
+    }
+    try {
+      const identity = await firebaseAuth.verifyIdToken(req.body.idToken);
+      userId = identity.uid;
+      provider = "firebase";
+    } catch (error) {
+      log("warn", "auth.firebase_token_rejected", { message: error.message });
+      return res.status(401).json({ error: "Google sign-in could not be verified." });
+    }
+  }
+  const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
+  return res.status(201).json({
+    token: signPayload({ sub: userId, provider, exp: expiresAt }),
+    expiresAt,
   });
+});
+
+const roomNameParts = [
+  "amber", "birch", "cedar", "coral", "maple", "river", "solar", "willow",
+];
+const roomLocks = new Map();
+
+async function withRoomLock(room, operation) {
+  const previous = roomLocks.get(room) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  roomLocks.set(room, current);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (roomLocks.get(room) === current) roomLocks.delete(room);
+  }
+}
+
+async function roomNameIsTaken(room) {
+  if (await ySocketIO.persistence?.provider?.getMeta(room, "deleted")) return true;
+  if (ySocketIO.documents.has(room)) return true;
+  if (roomStates.has(room)) {
+    const state = await roomStates.get(room);
+    if (state.deleted || state.ownerId || state.members.length) return true;
+  }
+  const metadata = await ySocketIO.persistence?.provider?.getMetas(room);
+  return Boolean(metadata?.size);
+}
+
+async function reserveRoomName(requestedRoom) {
+  if (requestedRoom) {
+    if (!validRoom(requestedRoom)) {
+      const error = new Error("Room names must use 1-40 letters, numbers, dashes, or underscores.");
+      error.status = 400;
+      throw error;
+    }
+    return withRoomLock(requestedRoom, async () => {
+      if (await roomNameIsTaken(requestedRoom)) {
+        const error = new Error("That room name is already in use. Try another name or join the existing room.");
+        error.status = 409;
+        throw error;
+      }
+      await ySocketIO.persistence?.provider?.setMeta(requestedRoom, "created", true);
+      return requestedRoom;
+    });
+  }
+
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const first = roomNameParts[randomInt(roomNameParts.length)];
+    const second = roomNameParts[randomInt(roomNameParts.length)];
+    const candidate = `${first}-${second}-${randomUUID().slice(0, 6)}`;
+    try {
+      const reserved = await withRoomLock(candidate, async () => {
+        if (await roomNameIsTaken(candidate)) return null;
+        await ySocketIO.persistence?.provider?.setMeta(candidate, "created", true);
+        return candidate;
+      });
+      if (reserved) return reserved;
+    } catch (error) {
+      if (error.status !== 409) throw error;
+    }
+  }
+  throw new Error("Could not generate an available room name. Please try again.");
+}
+
+app.post("/api/rooms", createRoomLimit, async (req, res, next) => {
+  const authorization = req.get("authorization") || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  const session = verifyPayload(token);
+  if (!session?.sub) return res.status(401).json({ error: "A valid room session is required." });
+
+  const room = req.body?.room;
+  if (room !== undefined && typeof room !== "string") {
+    return res.status(400).json({ error: "Room name must be text." });
+  }
+  if (room !== undefined && !room.trim()) {
+    return res.status(400).json({ error: "Room name cannot be empty." });
+  }
+  try {
+    const reservedRoom = await reserveRoomName(room?.trim().toLowerCase());
+    return res.status(201).json({ room: reservedRoom });
+  } catch (error) {
+    if (error.status === 400 || error.status === 409) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    return next(error);
+  }
+});
+
+function getRequestSession(req) {
+  const authorization = req.get("authorization") || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  return verifyPayload(token);
+}
+
+async function saveDocumentOwner(room, ownerUid) {
+  if (!firestore) throw new Error("Firestore is not configured on the backend.");
+  const reference = firestore.collection("documents").doc(room);
+  const current = await reference.get();
+  const data = {
+    room,
+    ownerUid,
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  if (!current.exists) data.createdAt = FieldValue.serverTimestamp();
+  await reference.set(data, { merge: true });
+}
+
+app.get("/api/documents", sessionLimit, async (req, res, next) => {
+  const session = getRequestSession(req);
+  if (!session?.sub || session.provider !== "firebase") {
+    return res.status(403).json({ error: "Sign in with Google to view your documents." });
+  }
+  if (!firestore) {
+    return res.status(503).json({ error: "My Documents storage is not configured on the backend." });
+  }
+  try {
+    const snapshot = await firestore.collection("documents")
+      .where("ownerUid", "==", session.sub)
+      .limit(100)
+      .get();
+    const documents = snapshot.docs
+      .map((document) => {
+        const data = document.data();
+        return {
+          room: data.room,
+          updatedAt: data.updatedAt?.toDate?.().toISOString() || null,
+        };
+      })
+      .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+    return res.status(200).json({ documents });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 const pistonRuntimes = {
@@ -214,6 +396,23 @@ function broadcastRoomState(namespace, state) {
   namespace.emit("room:state", publicRoomState(state));
 }
 
+function uniqueMemberName(state, preferredName, socketId) {
+  const taken = new Set(
+    state.members
+      .filter((member) => member.socketId !== socketId)
+      .map((member) => member.name.toLocaleLowerCase())
+  );
+  const baseName = preferredName.trim().slice(0, 24);
+  if (!taken.has(baseName.toLocaleLowerCase())) return baseName;
+
+  for (let suffixNumber = 2; suffixNumber < 10000; suffixNumber++) {
+    const suffix = ` ${suffixNumber}`;
+    const candidate = `${baseName.slice(0, 24 - suffix.length)}${suffix}`;
+    if (!taken.has(candidate.toLocaleLowerCase())) return candidate;
+  }
+  throw new Error("Could not assign a unique display name in this room.");
+}
+
 async function removeMember(socket, room, state, socketId = socket.id) {
   const index = state.members.findIndex((member) => member.socketId === socketId);
   if (index === -1) return;
@@ -222,6 +421,13 @@ async function removeMember(socket, room, state, socketId = socket.id) {
     const nextOwner = [...state.members].sort((a, b) => a.joinedAt - b.joinedAt)[0];
     state.ownerId = nextOwner?.userId || null;
     await ySocketIO.persistence?.provider?.setMeta(room, "ownerId", state.ownerId);
+    if (nextOwner && firestore) {
+      try {
+        await saveDocumentOwner(room, nextOwner.userId);
+      } catch (error) {
+        log("error", "documents.owner_transfer_failed", { room, message: error.message });
+      }
+    }
   }
   broadcastRoomState(socket.nsp, state);
   if (state.members.length === 0 && !state.deleted) roomStates.delete(room);
@@ -301,32 +507,62 @@ yjsNamespace.on("connection", (socket) => {
       return;
     }
 
-    const name = typeof profile?.name === "string" ? profile.name.trim().slice(0, 24) : "";
+    const preferredName = typeof profile?.name === "string" ? profile.name.trim().slice(0, 24) : "";
     const color = /^#[0-9a-f]{6}$/i.test(profile?.color || "") ? profile.color : "#fbbf24";
-    if (!name) {
+    if (!preferredName) {
       acknowledge({ error: "A display name is required." });
       return;
     }
 
-    state.members.push({ socketId: socket.id, userId: identity.sub, name, color, joinedAt: Date.now() });
+    const name = uniqueMemberName(state, preferredName, socket.id);
+    const existingMember = state.members.find((member) => member.socketId === socket.id);
+    if (existingMember) {
+      existingMember.name = name;
+      existingMember.color = color;
+    } else {
+      state.members.push({ socketId: socket.id, userId: identity.sub, name, color, joinedAt: Date.now() });
+    }
     if (!state.ownerId) {
       state.ownerId = identity.sub;
       await ySocketIO.persistence?.provider?.setMeta(room, "ownerId", state.ownerId);
     }
-    acknowledge({ state: publicRoomState(state, socket.id) });
+    await ySocketIO.persistence?.provider?.setMeta(room, "created", true);
+    let warning;
+    if (identity.provider === "firebase" && state.ownerId === identity.sub) {
+      try {
+        await saveDocumentOwner(room, identity.sub);
+      } catch (error) {
+        log("error", "documents.owner_save_failed", { room, message: error.message });
+        warning = "The room is available, but it could not be added to My Documents.";
+      }
+    }
+    acknowledge({ state: publicRoomState(state, socket.id), assignedName: name, warning });
     broadcastRoomState(socket.nsp, state);
   });
 
-  socket.on("room:update-profile", (profile) => {
+  socket.on("room:update-profile", (profile, acknowledge = () => {}) => {
     const statePromise = roomStates.get(room);
-    if (!statePromise) return;
+    if (!statePromise) {
+      acknowledge({ error: "You are not a member of this room." });
+      return;
+    }
     statePromise.then((state) => {
       const member = state.members.find((item) => item.socketId === socket.id);
-      if (!member) return;
-      if (typeof profile?.name === "string") member.name = profile.name.trim().slice(0, 24);
+      if (!member) {
+        acknowledge({ error: "You are not a member of this room." });
+        return;
+      }
+      if (typeof profile?.name === "string") {
+        const preferredName = profile.name.trim().slice(0, 24);
+        if (preferredName) member.name = uniqueMemberName(state, preferredName, socket.id);
+      }
       if (/^#[0-9a-f]{6}$/i.test(profile?.color || "")) member.color = profile.color;
+      acknowledge({ name: member.name, color: member.color });
       broadcastRoomState(socket.nsp, state);
-    }).catch((error) => log("error", "room.profile_update_failed", { message: error.message }));
+    }).catch((error) => {
+      log("error", "room.profile_update_failed", { message: error.message });
+      acknowledge({ error: "Could not update your room profile." });
+    });
   });
 
   socket.on("room:leave", async (acknowledge = () => {}) => {
@@ -358,6 +594,16 @@ yjsNamespace.on("connection", (socket) => {
     if (!actor || actor.userId !== state.ownerId) {
       acknowledge({ error: "Only the room owner can delete this room." });
       return;
+    }
+
+    if (firestore) {
+      try {
+        await firestore.collection("documents").doc(room).delete();
+      } catch (error) {
+        log("error", "documents.delete_failed", { room, message: error.message });
+        acknowledge({ error: "Could not remove this room from My Documents. The room was not deleted." });
+        return;
+      }
     }
 
     state.deleted = true;

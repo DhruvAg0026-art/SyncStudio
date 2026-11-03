@@ -1,7 +1,9 @@
 import "./App.css"
 import { lazy, Suspense, useEffect, useState } from "react"
-import { colorFor, useCollab } from "./useCollab"
+import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth"
+import { colorFor, getSessionToken, useCollab } from "./useCollab"
 import ChatSidebar from "./ChatSidebar"
+import { auth, firebaseConfigured, googleProvider } from "./firebase"
 
 // Loaded on demand so the Monaco bundle is only fetched when Code mode is used
 const CodeEditor = lazy(() => import("./CodeEditor"))
@@ -11,7 +13,6 @@ const USERNAME_KEY = "syncstudio-username"
 const PROFILE_KEY = "syncstudio-profile"
 const RECENT_ROOMS_KEY = "syncstudio-recent-rooms"
 const DEFAULT_ROOM = "main"
-const ROOM_WORDS = ["amber", "birch", "cedar", "coral", "maple", "river", "solar", "willow"]
 
 function cleanRoom(value) {
   return (value || "")
@@ -129,6 +130,15 @@ function App() {
   const [recentRooms, setRecentRooms] = useState(readRecentRooms)
   const [theme, setTheme] = useState(readInitialTheme)
   const [chatOpen, setChatOpen] = useState(false)
+  const [roomCreateError, setRoomCreateError] = useState("")
+  const [roomCreating, setRoomCreating] = useState(false)
+  const [authUser, setAuthUser] = useState(null)
+  const [authReady, setAuthReady] = useState(!auth)
+  const [authError, setAuthError] = useState("")
+  const [documents, setDocuments] = useState([])
+  const [documentsLoading, setDocumentsLoading] = useState(false)
+  const [documentsError, setDocumentsError] = useState("")
+  const [documentsRefresh, setDocumentsRefresh] = useState(0)
 
   const {
     session,
@@ -140,10 +150,61 @@ function App() {
     leaveRoom,
     kickMember,
     deleteRoom,
-  } = useCollab(room, username, profileColor)
+  } = useCollab(room, authReady ? username : "", profileColor, authUser)
 
   const selfSocketId = session?.provider.socket.id
   const isOwner = members.some((member) => member.socketId === selfSocketId && member.userId === ownerId)
+
+  useEffect(() => {
+    if (!auth) {
+      setAuthReady(true)
+      return
+    }
+    return onAuthStateChanged(
+      auth,
+      (user) => {
+        setAuthUser(user)
+        setAuthReady(true)
+        if (user) setJoinName((current) => current || user.displayName || user.email || "")
+      },
+      (error) => {
+        setAuthError(error.message)
+        setAuthReady(true)
+      }
+    )
+  }, [])
+
+  useEffect(() => {
+    if (!authUser || username) {
+      setDocuments([])
+      setDocumentsError("")
+      return
+    }
+
+    let active = true
+    const loadDocuments = async () => {
+      setDocuments([])
+      setDocumentsLoading(true)
+      setDocumentsError("")
+      try {
+        const sessionToken = await getSessionToken(authUser)
+        const response = await fetch(`${import.meta.env.VITE_CONNECT.replace(/\/+$/, "")}/api/documents`, {
+          headers: { authorization: `Bearer ${sessionToken}` },
+        })
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || "Could not load My Documents.")
+        if (active) setDocuments(result.documents || [])
+      } catch (error) {
+        if (active) setDocumentsError(error.message)
+      } finally {
+        if (active) setDocumentsLoading(false)
+      }
+    }
+    loadDocuments()
+    return () => {
+      active = false
+    }
+  }, [authUser, username, documentsRefresh])
 
   useEffect(() => {
     if (roomNotice === "You were removed from this room by its owner."
@@ -186,6 +247,41 @@ function App() {
   // -----------------------------
   // JOIN
   // -----------------------------
+
+  const handleGoogleSignIn = async () => {
+    setAuthError("")
+    if (!auth || !googleProvider) {
+      setAuthError("Google sign-in needs Firebase web settings in Frontend/.env and service-account settings on the backend.")
+      return
+    }
+    try {
+      const credential = await signInWithPopup(auth, googleProvider)
+      setAuthUser(credential.user)
+      setJoinName((current) => current || credential.user.displayName || credential.user.email || "")
+      setUsername("")
+    } catch (error) {
+      setAuthError(error.message || "Google sign-in failed.")
+    }
+  }
+
+  const handleSignOut = async () => {
+    setAuthError("")
+    if (!auth) return
+    try {
+      await signOut(auth)
+      setAuthUser(null)
+      setUsername("")
+      setJoinName("")
+      setDocuments([])
+      try {
+        sessionStorage.removeItem(USERNAME_KEY)
+      } catch {
+        // The account is signed out even if browser storage is unavailable.
+      }
+    } catch (error) {
+      setAuthError(error.message || "Could not sign out.")
+    }
+  }
 
   const handleJoin = (e) => {
     e.preventDefault()
@@ -268,16 +364,73 @@ function App() {
     }
   }
 
-  const createRoom = () => {
-    const word = () => ROOM_WORDS[Math.floor(Math.random() * ROOM_WORDS.length)]
-    const newRoom = `${word()}-${word()}-${Math.floor(100 + Math.random() * 900)}`
-    setJoinRoom(newRoom)
-    setMode("doc")
+  const createRoom = async (requestedRoom) => {
     const name = joinName.trim()
-    if (name) {
-      setRoom(newRoom)
-      setUsername(name)
+    if (!name) {
+      setRoomCreateError("Please enter a username before creating a room.")
+      return
     }
+
+    const roomName = requestedRoom === undefined ? "" : cleanRoom(requestedRoom)
+    if (requestedRoom !== undefined && !roomName) {
+      setRoomCreateError("Enter a valid room name before creating the room.")
+      return
+    }
+
+    setRoomCreateError("")
+    setRoomCreating(true)
+    try {
+      const sessionToken = await getSessionToken(authUser)
+      const response = await fetch(`${import.meta.env.VITE_CONNECT.replace(/\/+$/, "")}/api/rooms`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${sessionToken}`,
+        },
+        body: JSON.stringify(roomName ? { room: roomName } : {}),
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || "Could not create the room.")
+
+      setJoinRoom(result.room)
+      setMode("doc")
+      try {
+        sessionStorage.setItem(USERNAME_KEY, name)
+        localStorage.setItem(PROFILE_KEY, JSON.stringify({ name, color: profileColor }))
+      } catch {
+        // The room can still be opened without persistent browser storage.
+      }
+      setJoinName(name)
+      setRoom(result.room)
+      setUsername(name)
+    } catch (error) {
+      setRoomCreateError(error.message)
+    } finally {
+      setRoomCreating(false)
+    }
+  }
+
+  const handleCreateRoom = (event) => {
+    event.preventDefault()
+    createRoom(cleanRoom(joinRoom))
+  }
+
+  const handleGenerateRoom = (event) => {
+    event.preventDefault()
+    createRoom()
+  }
+
+  const openDocument = (document) => {
+    const name = joinName.trim() || authUser?.displayName || authUser?.email || ""
+    if (!name) {
+      setAuthError("Enter a display name before opening a document.")
+      return
+    }
+    setJoinName(name)
+    setJoinRoom(document.room)
+    setMode("doc")
+    setRoom(document.room)
+    setUsername(name)
   }
 
   const handleCopyLink = async () => {
@@ -297,6 +450,14 @@ function App() {
   // LOGIN SCREEN
   // -----------------------------
 
+  if (!authReady) {
+    return (
+      <main className="app-login h-screen w-full flex items-center justify-center">
+        <p className="join-subtitle">Checking your account…</p>
+      </main>
+    )
+  }
+
   if (!username) {
     return (
       <main className="app-login h-screen w-full flex p-4 items-center justify-center">
@@ -308,6 +469,59 @@ function App() {
           <p className="text-sm join-subtitle -mt-2 mb-5">
             Write documents and code together, in real time.
           </p>
+
+          {authUser ? (
+            <section className="account-panel">
+              <div>
+                <strong>Signed in</strong>
+                <span>{authUser.displayName || authUser.email}</span>
+              </div>
+              <button type="button" className="account-secondary-button" onClick={handleSignOut}>
+                Sign out
+              </button>
+            </section>
+          ) : (
+            <button type="button" className="google-sign-in-button" onClick={handleGoogleSignIn}>
+              {firebaseConfigured ? "Continue with Google" : "Set up Google sign-in"}
+            </button>
+          )}
+          {authError && <p className="auth-error" role="alert">{authError}</p>}
+
+          {authUser && (
+            <section className="my-documents" aria-label="My Documents">
+              <div className="my-documents-heading">
+                <h2>My Documents</h2>
+                <button
+                  type="button"
+                  onClick={() => setDocumentsRefresh((current) => current + 1)}
+                  disabled={documentsLoading}
+                >
+                  {documentsLoading ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+              {documentsError && <p className="auth-error" role="alert">{documentsError}</p>}
+              {!documentsError && documentsLoading && <p className="join-subtitle">Loading documents…</p>}
+              {!documentsError && !documentsLoading && documents.length === 0 && (
+                <p className="join-subtitle">Rooms you create while signed in will appear here.</p>
+              )}
+              {documents.length > 0 && (
+                <ul>
+                  {documents.map((document) => (
+                    <li key={document.room}>
+                      <button
+                        type="button"
+                        className="recent-room-card"
+                        onClick={() => openDocument(document)}
+                      >
+                        <span>{document.room}</span>
+                        <small>Document</small>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
 
           <form onSubmit={handleJoin} className="flex flex-col gap-4">
             <input
@@ -327,17 +541,36 @@ function App() {
               type="text"
               name="room"
               value={joinRoom}
-              onChange={(event) => setJoinRoom(event.target.value)}
+              onChange={(event) => {
+                setJoinRoom(event.target.value)
+                setRoomCreateError("")
+              }}
               placeholder="Room name"
               autoComplete="off"
               maxLength={40}
               className="join-input"
             />
 
-            <button type="submit" className="join-button">Join</button>
-            <button type="button" className="create-room-button" onClick={createRoom}>
-              Create new room
-            </button>
+            <button type="submit" className="join-button">Join room</button>
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                className="create-room-button"
+                onClick={handleCreateRoom}
+                disabled={roomCreating}
+              >
+                {roomCreating ? "Creating…" : "Create room with this name"}
+              </button>
+              <button
+                type="button"
+                className="create-room-button"
+                onClick={handleGenerateRoom}
+                disabled={roomCreating}
+              >
+                Generate a unique room name
+              </button>
+            </div>
+            {roomCreateError && <p className="room-create-error" role="alert">{roomCreateError}</p>}
           </form>
 
           {recentRooms.length > 0 && (
