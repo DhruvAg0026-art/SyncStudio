@@ -1,6 +1,7 @@
 import "./App.css"
 import { lazy, Suspense, useEffect, useState } from "react"
 import { colorFor, useCollab } from "./useCollab"
+import ChatSidebar from "./ChatSidebar"
 
 // Loaded on demand so the Monaco bundle is only fetched when Code mode is used
 const CodeEditor = lazy(() => import("./CodeEditor"))
@@ -63,6 +64,49 @@ function readInitialTheme() {
   return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark"
 }
 
+function ThemeToggle({ theme, onToggle }) {
+  const nextTheme = theme === "dark" ? "light" : "dark"
+
+  return (
+    <button
+      type="button"
+      className="theme-toggle"
+      onClick={onToggle}
+      aria-label={`Switch to ${nextTheme} theme`}
+      aria-pressed={theme === "dark"}
+      title={`Switch to ${nextTheme} theme`}
+    >
+      <svg
+        className="theme-toggle-icon"
+        viewBox="0 0 24 24"
+        fill="none"
+        aria-hidden="true"
+      >
+        {theme === "dark" ? (
+          <path
+            d="M20.2 15.1A8.5 8.5 0 0 1 8.9 3.8 8.6 8.6 0 1 0 20.2 15.1Z"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        ) : (
+          <>
+            <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="1.8" />
+            <path
+              d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+            />
+          </>
+        )}
+      </svg>
+      <span className="sr-only">{theme === "dark" ? "Dark theme" : "Light theme"}</span>
+    </button>
+  )
+}
+
 const STATUS = {
   connected: { label: "Connected", dot: "bg-green-400" },
   connecting: { label: "Connecting…", dot: "bg-amber-400" },
@@ -84,8 +128,29 @@ function App() {
   const [profileError, setProfileError] = useState("")
   const [recentRooms, setRecentRooms] = useState(readRecentRooms)
   const [theme, setTheme] = useState(readInitialTheme)
+  const [chatOpen, setChatOpen] = useState(false)
 
-  const { session, users, status } = useCollab(room, username, profileColor)
+  const {
+    session,
+    users,
+    status,
+    members,
+    ownerId,
+    roomNotice,
+    leaveRoom,
+    kickMember,
+    deleteRoom,
+  } = useCollab(room, username, profileColor)
+
+  const selfSocketId = session?.provider.socket.id
+  const isOwner = members.some((member) => member.socketId === selfSocketId && member.userId === ownerId)
+
+  useEffect(() => {
+    if (roomNotice === "You were removed from this room by its owner."
+      || roomNotice === "This room was deleted by its owner.") {
+      setUsername("")
+    }
+  }, [roomNotice])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -172,6 +237,16 @@ function App() {
   const openRecentRoom = (recent) => {
     setJoinRoom(recent.room)
     setMode(recent.mode)
+    const name = joinName.trim()
+    if (!name) return
+    try {
+      sessionStorage.setItem(USERNAME_KEY, name)
+      localStorage.setItem(PROFILE_KEY, JSON.stringify({ name, color: profileColor }))
+    } catch {
+      // The room can still be opened without persistent browser storage.
+    }
+    setRoom(recent.room)
+    setUsername(name)
   }
 
   const removeRecentRoom = (roomName) => {
@@ -195,8 +270,14 @@ function App() {
 
   const createRoom = () => {
     const word = () => ROOM_WORDS[Math.floor(Math.random() * ROOM_WORDS.length)]
-    setJoinRoom(`${word()}-${word()}-${Math.floor(100 + Math.random() * 900)}`)
+    const newRoom = `${word()}-${word()}-${Math.floor(100 + Math.random() * 900)}`
+    setJoinRoom(newRoom)
     setMode("doc")
+    const name = joinName.trim()
+    if (name) {
+      setRoom(newRoom)
+      setUsername(name)
+    }
   }
 
   const handleCopyLink = async () => {
@@ -222,9 +303,7 @@ function App() {
         <div className="join-card w-full max-w-md">
           <div className="flex items-center justify-between mb-5">
             <h1 className="text-3xl font-bold">SyncStudio</h1>
-            <button type="button" className="theme-toggle" onClick={toggleTheme}>
-              {theme === "dark" ? "Light theme" : "Dark theme"}
-            </button>
+            <ThemeToggle theme={theme} onToggle={toggleTheme} />
           </div>
           <p className="text-sm join-subtitle -mt-2 mb-5">
             Write documents and code together, in real time.
@@ -347,9 +426,16 @@ function App() {
           >
             {copied ? "Copied!" : "Copy invite link"}
           </button>
-          <button type="button" className="theme-toggle" onClick={toggleTheme}>
-            {theme === "dark" ? "Light" : "Dark"}
-          </button>
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
+          {session && (
+            <ChatSidebar
+              ydoc={session.ydoc}
+              user={session.user}
+              clientId={session.provider.awareness.clientID}
+              open={chatOpen}
+              onToggle={() => setChatOpen((open) => !open)}
+            />
+          )}
           <div className="profile-menu">
             <button
               type="button"
@@ -402,8 +488,42 @@ function App() {
           >
             Home
           </button>
+          <button
+            type="button"
+            className="profile-trigger"
+            onClick={() => {
+              if (window.confirm("Leave this room?")) {
+                leaveRoom()
+                setUsername("")
+              }
+            }}
+          >
+            Leave room
+          </button>
+          {isOwner && (
+            <button
+              type="button"
+              className="delete-room-button"
+              onClick={() => {
+                if (window.confirm(`Permanently delete room "${room}" and its saved document?`)) {
+                  deleteRoom()
+                }
+              }}
+            >
+              Delete room
+            </button>
+          )}
         </div>
       </header>
+
+      {roomNotice && (
+        <div className="room-notice" role="status">
+          <span>{roomNotice}</span>
+          {!isOwner && (
+            <button type="button" onClick={() => setUsername("")}>Return home</button>
+          )}
+        </div>
+      )}
 
       <div className="app-workspace flex flex-1 min-h-0 gap-4">
 
@@ -411,21 +531,34 @@ function App() {
 
         <aside className="app-users no-print hidden md:block h-full w-56 shrink-0 rounded-lg overflow-auto">
           <h2 className="text-xl font-bold p-4 border-b border-gray-300">
-            Users ({users.length})
+            Members ({members.length || users.length})
           </h2>
 
           <ul className="p-4">
-            {users.map((user) => (
+            {(members.length ? members : users).map((user) => (
               <li
-                key={user.clientId}
-                className="p-2 bg-gray-800 text-white rounded mb-2 flex items-center gap-2"
+                key={user.socketId || user.clientId}
+                className="room-member p-2 rounded mb-2 flex items-center gap-2"
               >
                 <span
                   className="w-3 h-3 rounded-full shrink-0"
                   style={{ backgroundColor: user.color }}
                 />
                 <span className="truncate">{user.name}</span>
-                {user.isMe && <span className="ml-auto text-xs text-gray-400">you</span>}
+                {user.userId === ownerId && <span className="text-xs room-owner-badge">owner</span>}
+                {user.socketId === selfSocketId && <span className="ml-auto text-xs room-you-badge">you</span>}
+                {isOwner && user.socketId !== selfSocketId && user.userId !== ownerId && (
+                  <button
+                    type="button"
+                    className="kick-member-button"
+                    aria-label={`Remove ${user.name} from room`}
+                    onClick={() => {
+                      if (window.confirm(`Remove ${user.name} from this room?`)) kickMember(user.socketId)
+                    }}
+                  >
+                    Kick
+                  </button>
+                )}
               </li>
             ))}
           </ul>

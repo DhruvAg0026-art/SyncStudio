@@ -6,6 +6,7 @@ import CollaborationCaret from "@tiptap/extension-collaboration-caret"
 import TextAlign from "@tiptap/extension-text-align"
 import Placeholder from "@tiptap/extension-placeholder"
 import TurndownService from "turndown"
+import VersionHistory from "./VersionHistory"
 
 // -----------------------------
 // Title (synced through a Y.Text so concurrent edits merge)
@@ -294,6 +295,7 @@ ${editor.getHTML()}
       {/* TITLE + EXPORT */}
       <div className="doc-titlebar no-print flex items-center gap-2 px-3 py-2 bg-gray-900">
         <TitleInput ydoc={ydoc} />
+        <VersionHistory ydoc={ydoc} mode="doc" user={user} editor={editor} />
 
         <div className="relative">
           <button

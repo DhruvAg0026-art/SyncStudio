@@ -13,6 +13,12 @@ Live app: https://sync-studio-sooty.vercel.app/
 - Rich-text toolbar: headings, bold/italic/underline/strike, links, lists, quotes, code blocks, alignment, undo/redo
 - Live colored cursors with user names
 - Rooms via URL (`?room=my-room&mode=doc`) and a "Copy invite link" button
+- Per-user dark/light theme, editable profile, recent rooms, and readable room creation
+- Room members can leave; owners can remove members or delete a room
+- Ownership transfers to the earliest-joined remaining member when the owner leaves
+- Code mode can run selected languages in the external Piston sandbox, with shared output
+- Room chat syncs through Yjs and keeps the latest 200 messages
+- Version history can be manually saved or automatically captured after editing activity
 - Synced document title, word/character count
 - Export to HTML, Markdown, plain text, or print / save as PDF
 - Documents are saved on the server and survive restarts
@@ -58,6 +64,14 @@ Create `Frontend/.env` from the example file:
 VITE_CONNECT="http://localhost:3000"
 ```
 
+Create `Backend/.env` from `Backend/.env.example`. Set `ROOM_SECRET` to a
+private random value of at least 32 characters and keep the same value across
+backend restarts. The backend signs anonymous session tokens with this secret;
+losing it invalidates existing sessions and prevents the previous owner from
+recovering ownership of a room. `CLIENT_ORIGIN` must exactly match the frontend
+origin in production. `DATA_DIR` should point to persistent storage if room
+documents need to survive redeployments.
+
 ## Run Locally
 
 Start the backend in one terminal:
@@ -75,6 +89,28 @@ npm run dev
 ```
 
 Open the URL shown by Vite, usually `http://localhost:5173`.
+
+## Rooms and code execution
+
+The first active member to join a room becomes its owner. The owner can kick
+members or delete the room; when the owner leaves, ownership is transferred to
+the earliest-joined active member. Room ownership and deletion markers are
+stored as LevelDB metadata alongside Yjs persistence. Room names and ownership
+are enforced by the backend, not only by frontend controls.
+
+Code execution is sent from the backend to the external Piston API (configurable
+with `PISTON_API_URL`); SyncStudio does not execute submitted code on its own
+server. The endpoint allows a bounded set of runtimes, caps code/stdin size,
+limits requests per IP, and applies execution time/memory limits. Submitted
+source code and stdin are sent to the configured execution service. The public
+Piston endpoint returned HTTP 401 during verification, so production deployments
+must point `PISTON_API_URL` at an accessible Piston-compatible service.
+
+Version snapshots include the active mode's Yjs state and are shared with the
+room. They are capped at 30 versions and 100 KB per snapshot to bound document
+growth; larger documents cannot currently be snapshotted. Each version stores a
+base64 state update plus a restore payload, so storage grows with document size
+and snapshot count. Oldest snapshots are removed first.
 
 ## Saving documents
 
@@ -98,9 +134,11 @@ Add this environment variable after the Vercel frontend is created:
 
 ```text
 CLIENT_ORIGIN=https://your-app.vercel.app
+ROOM_SECRET=use-a-private-random-secret-at-least-32-characters-long
+DATA_DIR=/var/data
 ```
 
-Render provides `PORT` automatically. Use a Web Service, not a static site, because Socket.IO and Yjs need a long-running server.
+Render provides `PORT` automatically. Use a Web Service, not a static site, because Socket.IO and Yjs need a long-running server. Configure `CLIENT_ORIGIN` with the deployed frontend's exact origin and set a persistent `ROOM_SECRET`.
 
 ### Frontend on Vercel
 
