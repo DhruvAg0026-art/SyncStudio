@@ -20,13 +20,14 @@ export function colorFor(name) {
 //   ydoc.getText("monaco")        -> code editor content
 //   ydoc.getXmlFragment("doc")    -> rich-text document content
 //   ydoc.getText("title")         -> document title
-export function useCollab(room, username) {
+export function useCollab(room, username, color = colorFor(username || "")) {
   const [session, setSession] = useState(null)
   const [users, setUsers] = useState([])
   const [status, setStatus] = useState("connecting")
+  const hasUsername = Boolean(username)
 
   useEffect(() => {
-    if (!room || !username) return
+    if (!room || !hasUsername) return
 
     const ydoc = new Y.Doc()
     const provider = new SocketIOProvider(
@@ -35,9 +36,6 @@ export function useCollab(room, username) {
       ydoc,
       { autoConnect: true }
     )
-
-    const user = { name: username, color: colorFor(username) }
-    provider.awareness.setLocalStateField("user", user)
 
     const updateUsers = () => {
       const list = []
@@ -99,7 +97,7 @@ export function useCollab(room, username) {
     provider.on("status", onStatus)
     onAwareness()
 
-    setSession({ ydoc, provider, user })
+    setSession({ ydoc, provider, user: { name: "", color: "#fbbf24" } })
 
     return () => {
       provider.awareness.off("change", onAwareness)
@@ -111,7 +109,18 @@ export function useCollab(room, username) {
       setUsers([])
       setStatus("connecting")
     }
-  }, [room, username])
+  }, [room, hasUsername])
+
+  const provider = session?.provider
+
+  useEffect(() => {
+    if (!provider) return
+    const user = { name: username, color }
+    provider.awareness.setLocalStateField("user", user)
+    setSession((current) => current?.provider === provider
+      ? { ...current, user }
+      : current)
+  }, [provider, username, color])
 
   return { session, users, status }
 }

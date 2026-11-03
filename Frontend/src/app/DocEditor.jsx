@@ -51,7 +51,7 @@ function TitleInput({ ydoc }) {
       placeholder="Untitled document"
       maxLength={120}
       className="
-        bg-transparent text-white text-lg font-semibold outline-none
+        doc-title-input bg-transparent text-white text-lg font-semibold outline-none
         px-2 py-1 rounded border border-transparent
         hover:border-gray-600 focus:border-amber-300
         min-w-0 flex-1
@@ -131,7 +131,7 @@ function Toolbar({ editor }) {
   }
 
   return (
-    <div className="no-print flex flex-wrap items-center gap-1 px-2 py-1 bg-gray-900 border-b border-gray-800">
+    <div className="doc-toolbar no-print flex flex-wrap items-center gap-1 px-2 py-1 bg-gray-900 border-b border-gray-800">
       <Btn title="Undo (Ctrl+Z)" onClick={() => chain().undo().run()}>↶</Btn>
       <Btn title="Redo (Ctrl+Y)" onClick={() => chain().redo().run()}>↷</Btn>
       <Divider />
@@ -140,7 +140,7 @@ function Toolbar({ editor }) {
         value={s.heading}
         onChange={setHeading}
         title="Text style"
-        className="h-8 rounded bg-gray-800 text-gray-100 text-sm px-2 outline-none"
+        className="doc-toolbar-select h-8 rounded bg-gray-800 text-gray-100 text-sm px-2 outline-none"
       >
         <option value={0}>Normal text</option>
         <option value={1}>Heading 1</option>
@@ -234,6 +234,10 @@ export default function DocEditor({ ydoc, provider, user, room }) {
     [ydoc, provider]
   )
 
+  useEffect(() => {
+    if (editor) editor.commands.updateUser(user)
+  }, [editor, user])
+
   const stats = useEditorState({
     editor,
     selector: ({ editor }) => {
@@ -285,10 +289,10 @@ ${editor.getHTML()}
   const menuItem = "block w-full text-left px-3 py-2 text-sm text-gray-100 hover:bg-gray-700"
 
   return (
-    <div className="h-full flex flex-col bg-neutral-800">
+    <div className="doc-editor-root h-full flex flex-col bg-neutral-800">
 
       {/* TITLE + EXPORT */}
-      <div className="no-print flex items-center gap-2 px-3 py-2 bg-gray-900">
+      <div className="doc-titlebar no-print flex items-center gap-2 px-3 py-2 bg-gray-900">
         <TitleInput ydoc={ydoc} />
 
         <div className="relative">
@@ -301,7 +305,7 @@ ${editor.getHTML()}
           </button>
 
           {exportOpen && (
-            <div className="absolute right-0 top-9 z-10 w-48 rounded bg-gray-800 border border-gray-700 shadow-lg overflow-hidden">
+            <div             className="doc-export-menu absolute right-0 top-9 z-10 w-48 rounded bg-gray-800 border border-gray-700 shadow-lg overflow-hidden">
               <button className={menuItem} onClick={run(exportHtml)}>HTML (.html)</button>
               <button className={menuItem} onClick={run(exportMarkdown)}>Markdown (.md)</button>
               <button className={menuItem} onClick={run(exportText)}>Plain text (.txt)</button>
@@ -321,7 +325,7 @@ ${editor.getHTML()}
       </div>
 
       {/* FOOTER */}
-      <div className="no-print px-3 py-1 bg-gray-900 text-xs text-gray-400 flex gap-4">
+      <div className="doc-footer no-print px-3 py-1 bg-gray-900 text-xs text-gray-400 flex gap-4">
         <span>{stats.words} words</span>
         <span>{stats.chars} characters</span>
       </div>

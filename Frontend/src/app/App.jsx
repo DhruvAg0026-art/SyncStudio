@@ -1,13 +1,16 @@
 import "./App.css"
 import { lazy, Suspense, useEffect, useState } from "react"
-import { useCollab } from "./useCollab"
+import { colorFor, useCollab } from "./useCollab"
 
 // Loaded on demand so the Monaco bundle is only fetched when Code mode is used
 const CodeEditor = lazy(() => import("./CodeEditor"))
 const DocEditor = lazy(() => import("./DocEditor"))
 
 const USERNAME_KEY = "syncstudio-username"
+const PROFILE_KEY = "syncstudio-profile"
+const RECENT_ROOMS_KEY = "syncstudio-recent-rooms"
 const DEFAULT_ROOM = "main"
+const ROOM_WORDS = ["amber", "birch", "cedar", "coral", "maple", "river", "solar", "willow"]
 
 function cleanRoom(value) {
   return (value || "")
@@ -21,18 +24,43 @@ function readInitialState() {
   const params = new URLSearchParams(window.location.search)
 
   let savedName = ""
+  let profile = {}
   try {
     savedName = sessionStorage.getItem(USERNAME_KEY) || ""
+    profile = JSON.parse(localStorage.getItem(PROFILE_KEY) || "{}")
   } catch {
-    // storage can be blocked; the username then simply isn't remembered
+    // Storage can be blocked; use the in-memory defaults.
   }
 
+  const username = (params.get("username") || profile.name || savedName).trim()
   return {
     // ?username= is still supported for old links
-    username: (params.get("username") || savedName).trim(),
+    username,
+    color: /^#[0-9a-f]{6}$/i.test(profile.color || "") ? profile.color : colorFor(username),
     room: cleanRoom(params.get("room")) || DEFAULT_ROOM,
     mode: params.get("mode") === "code" ? "code" : "doc",
   }
+}
+
+function readRecentRooms() {
+  try {
+    const rooms = JSON.parse(localStorage.getItem(RECENT_ROOMS_KEY) || "[]")
+    return Array.isArray(rooms)
+      ? rooms.filter((item) => item?.room && ["doc", "code"].includes(item.mode)).slice(0, 10)
+      : []
+  } catch {
+    return []
+  }
+}
+
+function readInitialTheme() {
+  try {
+    const savedTheme = localStorage.getItem("syncstudio-theme")
+    if (savedTheme === "light" || savedTheme === "dark") return savedTheme
+  } catch {
+    // Fall through to the operating system preference.
+  }
+  return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark"
 }
 
 const STATUS = {
@@ -44,17 +72,50 @@ const STATUS = {
 function App() {
   const [initial] = useState(readInitialState)
   const [username, setUsername] = useState(initial.username)
+  const [joinName, setJoinName] = useState(initial.username)
   const [room, setRoom] = useState(initial.room)
+  const [joinRoom, setJoinRoom] = useState(initial.room)
   const [mode, setMode] = useState(initial.mode)
   const [copied, setCopied] = useState(false)
+  const [profileColor, setProfileColor] = useState(initial.color)
+  const [profileOpen, setProfileOpen] = useState(false)
+  const [profileNameDraft, setProfileNameDraft] = useState(initial.username)
+  const [profileColorDraft, setProfileColorDraft] = useState(initial.color)
+  const [profileError, setProfileError] = useState("")
+  const [recentRooms, setRecentRooms] = useState(readRecentRooms)
+  const [theme, setTheme] = useState(readInitialTheme)
 
-  const { session, users, status } = useCollab(room, username)
+  const { session, users, status } = useCollab(room, username, profileColor)
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    try {
+      localStorage.setItem("syncstudio-theme", theme)
+    } catch {
+      // The current selection still applies for this session.
+    }
+  }, [theme])
 
   // Keep the URL shareable: room + mode (never the username)
   useEffect(() => {
     if (!username) return
     const params = new URLSearchParams({ room, mode })
     window.history.replaceState({}, "", `?${params.toString()}`)
+  }, [username, room, mode])
+
+  useEffect(() => {
+    if (!username) return
+
+    const nextRooms = [
+      { room, mode, lastVisited: Date.now() },
+      ...readRecentRooms().filter((item) => item.room !== room),
+    ].slice(0, 10)
+    setRecentRooms(nextRooms)
+    try {
+      localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(nextRooms))
+    } catch {
+      // Recent rooms remain available in memory until the page is closed.
+    }
   }, [username, room, mode])
 
   // -----------------------------
@@ -64,8 +125,8 @@ function App() {
   const handleJoin = (e) => {
     e.preventDefault()
 
-    const name = e.target.username.value.trim()
-    const roomName = cleanRoom(e.target.room.value) || DEFAULT_ROOM
+    const name = joinName.trim()
+    const roomName = cleanRoom(joinRoom) || DEFAULT_ROOM
 
     if (!name) {
       alert("Please enter a username")
@@ -74,12 +135,68 @@ function App() {
 
     try {
       sessionStorage.setItem(USERNAME_KEY, name)
+      localStorage.setItem(PROFILE_KEY, JSON.stringify({ name, color: profileColor }))
     } catch {
-      // ignore
+      // The user can still join without persistent browser storage.
     }
 
+    setJoinName(name)
     setRoom(roomName)
     setUsername(name)
+  }
+
+  const saveProfile = (event) => {
+    event.preventDefault()
+    const name = profileNameDraft.trim()
+    if (name.length < 1 || name.length > 24) {
+      setProfileError("Name must be between 1 and 24 characters.")
+      return
+    }
+
+    setProfileError("")
+    setUsername((current) => current ? name : current)
+    setJoinName(name)
+    setProfileNameDraft(name)
+    setProfileColor(profileColorDraft)
+    try {
+      sessionStorage.setItem(USERNAME_KEY, name)
+      localStorage.setItem(PROFILE_KEY, JSON.stringify({ name, color: profileColorDraft }))
+    } catch {
+      // The profile is updated for this session even if storage is unavailable.
+    }
+    setProfileOpen(false)
+  }
+
+  const toggleTheme = () => setTheme((current) => current === "dark" ? "light" : "dark")
+
+  const openRecentRoom = (recent) => {
+    setJoinRoom(recent.room)
+    setMode(recent.mode)
+  }
+
+  const removeRecentRoom = (roomName) => {
+    const nextRooms = recentRooms.filter((item) => item.room !== roomName)
+    setRecentRooms(nextRooms)
+    try {
+      localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(nextRooms))
+    } catch {
+      // Keep the change in memory.
+    }
+  }
+
+  const clearRecentRooms = () => {
+    setRecentRooms([])
+    try {
+      localStorage.removeItem(RECENT_ROOMS_KEY)
+    } catch {
+      // Keep the list cleared in memory.
+    }
+  }
+
+  const createRoom = () => {
+    const word = () => ROOM_WORDS[Math.floor(Math.random() * ROOM_WORDS.length)]
+    setJoinRoom(`${word()}-${word()}-${Math.floor(100 + Math.random() * 900)}`)
+    setMode("doc")
   }
 
   const handleCopyLink = async () => {
@@ -101,37 +218,76 @@ function App() {
 
   if (!username) {
     return (
-      <main className="app-login h-screen w-full bg-gray-950 flex p-4 items-center justify-center">
-        <form onSubmit={handleJoin} className="flex flex-col gap-4 w-full max-w-xs">
-          <h1 className="text-3xl font-bold text-amber-50">SyncStudio</h1>
-          <p className="text-sm text-gray-400 -mt-2">
+      <main className="app-login h-screen w-full flex p-4 items-center justify-center">
+        <div className="join-card w-full max-w-md">
+          <div className="flex items-center justify-between mb-5">
+            <h1 className="text-3xl font-bold">SyncStudio</h1>
+            <button type="button" className="theme-toggle" onClick={toggleTheme}>
+              {theme === "dark" ? "Light theme" : "Dark theme"}
+            </button>
+          </div>
+          <p className="text-sm join-subtitle -mt-2 mb-5">
             Write documents and code together, in real time.
           </p>
 
-          <input
-            type="text"
-            name="username"
-            placeholder="Enter your username"
-            autoComplete="off"
-            maxLength={30}
-            autoFocus
-            className="p-2 rounded-lg bg-gray-800 text-white outline-none"
-          />
+          <form onSubmit={handleJoin} className="flex flex-col gap-4">
+            <input
+              type="text"
+              name="username"
+              value={joinName}
+              onChange={(event) => setJoinName(event.target.value)}
+              placeholder="Enter your username"
+              autoComplete="off"
+              maxLength={24}
+              autoFocus
+              required
+              className="join-input"
+            />
 
-          <input
-            type="text"
-            name="room"
-            defaultValue={room}
-            placeholder="Room name"
-            autoComplete="off"
-            maxLength={40}
-            className="p-2 rounded-lg bg-gray-800 text-white outline-none"
-          />
+            <input
+              type="text"
+              name="room"
+              value={joinRoom}
+              onChange={(event) => setJoinRoom(event.target.value)}
+              placeholder="Room name"
+              autoComplete="off"
+              maxLength={40}
+              className="join-input"
+            />
 
-          <button type="submit" className="p-2 rounded-lg bg-amber-50 text-gray-950 font-bold">
-            Join
-          </button>
-        </form>
+            <button type="submit" className="join-button">Join</button>
+            <button type="button" className="create-room-button" onClick={createRoom}>
+              Create new room
+            </button>
+          </form>
+
+          {recentRooms.length > 0 && (
+            <section className="recent-rooms" aria-label="Recent rooms">
+              <div className="flex items-center justify-between">
+                <h2>Recent rooms</h2>
+                <button type="button" onClick={clearRecentRooms}>Clear all</button>
+              </div>
+              <ul>
+                {recentRooms.map((recent) => (
+                  <li key={recent.room}>
+                    <button type="button" className="recent-room-card" onClick={() => openRecentRoom(recent)}>
+                      <span>{recent.room}</span>
+                      <small>{recent.mode === "doc" ? "Document" : "Code"}</small>
+                    </button>
+                    <button
+                      type="button"
+                      className="remove-recent-room"
+                      onClick={() => removeRecentRoom(recent.room)}
+                      aria-label={`Remove ${recent.room} from recent rooms`}
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </div>
       </main>
     )
   }
@@ -160,7 +316,7 @@ function App() {
   )
 
   return (
-    <main className="app-shell h-screen w-full bg-gray-950 flex flex-col gap-3 p-4">
+    <main className="app-shell h-screen w-full flex flex-col gap-3 p-4">
 
       {/* HEADER */}
 
@@ -191,6 +347,61 @@ function App() {
           >
             {copied ? "Copied!" : "Copy invite link"}
           </button>
+          <button type="button" className="theme-toggle" onClick={toggleTheme}>
+            {theme === "dark" ? "Light" : "Dark"}
+          </button>
+          <div className="profile-menu">
+            <button
+              type="button"
+              className="profile-trigger"
+              onClick={() => {
+                setProfileNameDraft(username)
+                setProfileColorDraft(profileColor)
+                setProfileError("")
+                setProfileOpen((open) => !open)
+              }}
+            >
+              Edit profile
+            </button>
+            {profileOpen && (
+              <form className="profile-popover" onSubmit={saveProfile}>
+                <label>
+                  Display name
+                  <input
+                    value={profileNameDraft}
+                    onChange={(event) => setProfileNameDraft(event.target.value)}
+                    maxLength={24}
+                    required
+                  />
+                </label>
+                <label>
+                  Cursor color
+                  <input
+                    type="color"
+                    value={profileColorDraft}
+                    onChange={(event) => setProfileColorDraft(event.target.value)}
+                  />
+                </label>
+                {profileError && <p role="alert">{profileError}</p>}
+                <div className="flex gap-2">
+                  <button type="submit">Save</button>
+                  <button type="button" onClick={() => setProfileOpen(false)}>Cancel</button>
+                </div>
+              </form>
+            )}
+          </div>
+          <button
+            type="button"
+            className="profile-trigger"
+            onClick={() => {
+              setJoinName(username)
+              setJoinRoom(room)
+              setUsername("")
+              setProfileOpen(false)
+            }}
+          >
+            Home
+          </button>
         </div>
       </header>
 
@@ -198,7 +409,7 @@ function App() {
 
         {/* USERS */}
 
-        <aside className="app-users no-print hidden md:block h-full w-56 shrink-0 bg-amber-50 rounded-lg overflow-auto">
+        <aside className="app-users no-print hidden md:block h-full w-56 shrink-0 rounded-lg overflow-auto">
           <h2 className="text-xl font-bold p-4 border-b border-gray-300">
             Users ({users.length})
           </h2>
@@ -232,6 +443,7 @@ function App() {
                   key={`code-${room}`}
                   ydoc={session.ydoc}
                   provider={session.provider}
+                  theme={theme}
                 />
               ) : (
                 <DocEditor

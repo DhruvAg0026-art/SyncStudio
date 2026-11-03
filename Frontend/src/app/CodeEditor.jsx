@@ -31,7 +31,7 @@ const LANGUAGES = [
   ["lua", "Lua"],
 ]
 
-export default function CodeEditor({ ydoc, provider }) {
+export default function CodeEditor({ ydoc, provider, theme = "dark" }) {
   const [editor, setEditor] = useState(null)
   const [language, setLanguage] = useState("javascript")
 
@@ -87,7 +87,7 @@ export default function CodeEditor({ ydoc, provider }) {
         <Editor
           height="100%"
           language={language}
-          theme="vs-dark"
+          theme={theme === "light" ? "vs" : "vs-dark"}
           options={{ fontSize: 14, minimap: { enabled: false }, automaticLayout: true }}
           onMount={(mountedEditor) => setEditor(mountedEditor)}
         />
