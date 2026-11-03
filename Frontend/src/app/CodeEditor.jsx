@@ -36,6 +36,25 @@ export default function CodeEditor({ ydoc, provider }) {
   const [language, setLanguage] = useState("javascript")
 
   useEffect(() => {
+    const settings = ydoc.getMap("settings")
+    const updateLanguage = () => {
+      const sharedLanguage = settings.get("language")
+      if (LANGUAGES.some(([value]) => value === sharedLanguage)) {
+        setLanguage(sharedLanguage)
+      } else if (sharedLanguage == null) {
+        settings.set("language", "javascript")
+      } else {
+        setLanguage("javascript")
+      }
+    }
+
+    settings.observe(updateLanguage)
+    updateLanguage()
+
+    return () => settings.unobserve(updateLanguage)
+  }, [ydoc])
+
+  useEffect(() => {
     if (!editor) return
 
     const binding = new MonacoBinding(
@@ -55,7 +74,7 @@ export default function CodeEditor({ ydoc, provider }) {
         <select
           id="code-language"
           value={language}
-          onChange={(event) => setLanguage(event.target.value)}
+          onChange={(event) => ydoc.getMap("settings").set("language", event.target.value)}
           aria-label="Code language"
         >
           {LANGUAGES.map(([value, label]) => (
