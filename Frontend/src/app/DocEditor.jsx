@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react"
+import { Mark, mergeAttributes } from "@tiptap/core"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useEditor, EditorContent, useEditorState } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
 import Collaboration from "@tiptap/extension-collaboration"
@@ -6,7 +7,31 @@ import CollaborationCaret from "@tiptap/extension-collaboration-caret"
 import TextAlign from "@tiptap/extension-text-align"
 import Placeholder from "@tiptap/extension-placeholder"
 import TurndownService from "turndown"
+import * as Y from "yjs"
 import VersionHistory from "./VersionHistory"
+
+const CommentMark = Mark.create({
+  name: "comment",
+  inclusive: false,
+
+  addAttributes() {
+    return {
+      commentId: {
+        default: null,
+        parseHTML: (element) => element.getAttribute("data-comment-id"),
+        renderHTML: (attributes) => ({ "data-comment-id": attributes.commentId }),
+      },
+    }
+  },
+
+  parseHTML() {
+    return [{ tag: "mark[data-comment-id]" }]
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ["mark", mergeAttributes(HTMLAttributes, { class: "doc-comment-mark" }), 0]
+  },
+})
 
 // -----------------------------
 // Title (synced through a Y.Text so concurrent edits merge)
@@ -185,6 +210,223 @@ function Toolbar({ editor }) {
   )
 }
 
+function CommentPanel({ editor, ydoc, user, open, onClose }) {
+  const commentsMap = useMemo(() => ydoc.getMap("docComments"), [ydoc])
+  const selectionEmpty = useEditorState({
+    editor,
+    selector: ({ editor }) => editor.state.selection.empty,
+  })
+  const [comments, setComments] = useState([])
+  const [draftRange, setDraftRange] = useState(null)
+  const [commentText, setCommentText] = useState("")
+  const [replyDrafts, setReplyDrafts] = useState({})
+  const commentInputRef = useRef(null)
+
+  useEffect(() => {
+    const refresh = () => {
+      const entries = Array.from(commentsMap.entries())
+        .map(([id, thread]) => ({
+          id,
+          author: thread.get("author") || "Guest",
+          color: thread.get("color") || "#fbbf24",
+          quote: thread.get("quote") || "",
+          text: thread.get("text") || "",
+          createdAt: thread.get("createdAt") || 0,
+          resolved: thread.get("resolved") || false,
+          replies: thread.get("replies")?.toArray() || [],
+        }))
+        .sort((a, b) => a.createdAt - b.createdAt)
+      setComments(entries)
+    }
+    refresh()
+    commentsMap.observeDeep(refresh)
+    return () => commentsMap.unobserveDeep(refresh)
+  }, [commentsMap])
+
+  useEffect(() => {
+    if (draftRange) commentInputRef.current?.focus()
+  }, [draftRange])
+
+  const startComment = () => {
+    const { from, to } = editor.state.selection
+    if (from === to) return
+    setDraftRange({
+      from,
+      to,
+      quote: editor.state.doc.textBetween(from, to, " ").slice(0, 240),
+    })
+    setCommentText("")
+  }
+
+  const saveComment = (event) => {
+    event.preventDefault()
+    const text = commentText.trim()
+    if (!draftRange || !text) return
+
+    const id = crypto.randomUUID()
+    const thread = new Y.Map()
+    const replies = new Y.Array()
+    thread.set("author", user.name || "Guest")
+    thread.set("color", user.color || "#fbbf24")
+    thread.set("quote", draftRange.quote)
+    thread.set("text", text)
+    thread.set("createdAt", Date.now())
+    thread.set("resolved", false)
+    thread.set("replies", replies)
+
+    ydoc.transact(() => {
+      editor.chain()
+        .focus()
+        .setTextSelection({ from: draftRange.from, to: draftRange.to })
+        .setMark("comment", { commentId: id })
+        .run()
+      commentsMap.set(id, thread)
+    })
+    setDraftRange(null)
+    setCommentText("")
+  }
+
+  const addReply = (event, id) => {
+    event.preventDefault()
+    const text = (replyDrafts[id] || "").trim()
+    if (!text) return
+    const thread = commentsMap.get(id)
+    if (!(thread instanceof Y.Map)) return
+    const replies = thread.get("replies")
+    if (!(replies instanceof Y.Array)) return
+    replies.push([{
+      author: user.name || "Guest",
+      color: user.color || "#fbbf24",
+      text,
+      createdAt: Date.now(),
+    }])
+    setReplyDrafts((current) => ({ ...current, [id]: "" }))
+  }
+
+  const toggleResolved = (id) => {
+    const thread = commentsMap.get(id)
+    if (thread instanceof Y.Map) thread.set("resolved", !thread.get("resolved"))
+  }
+
+  const openComment = (id) => {
+    let from = Infinity
+    let to = -Infinity
+    editor.state.doc.descendants((node, position) => {
+      if (!node.isText) return
+      if (node.marks.some((mark) => mark.type.name === "comment" && mark.attrs.commentId === id)) {
+        from = Math.min(from, position)
+        to = Math.max(to, position + node.nodeSize)
+      }
+    })
+    if (from !== Infinity) {
+      editor.chain().focus().setTextSelection({ from, to }).scrollIntoView().run()
+    }
+  }
+
+  return (
+    <aside className={`doc-comments-panel ${open ? "is-open" : ""}`} aria-label="Document comments">
+      <div className="doc-comments-header">
+        <div>
+          <h2>Comments</h2>
+          <span>{comments.filter((comment) => !comment.resolved).length} open</span>
+        </div>
+        <button type="button" onClick={onClose} aria-label="Close comments">×</button>
+      </div>
+
+      <div className="doc-comments-list">
+        {comments.length === 0 && !draftRange && (
+          <p className="doc-comments-empty">Select text in the document to start a comment thread.</p>
+        )}
+        {comments.map((comment) => (
+          <article
+            key={comment.id}
+            className={`doc-comment-thread ${comment.resolved ? "is-resolved" : ""}`}
+            onClick={() => openComment(comment.id)}
+          >
+            <button type="button" className="doc-comment-quote" onClick={() => openComment(comment.id)}>
+              “{comment.quote || "Selected text"}”
+            </button>
+            <div className="doc-comment-author">
+              <span style={{ backgroundColor: comment.color }} />
+              <strong>{comment.author}</strong>
+              <time>{new Date(comment.createdAt).toLocaleString()}</time>
+            </div>
+            <p className="doc-comment-text">{comment.text}</p>
+            {comment.replies.map((reply, index) => (
+              <div className="doc-comment-reply" key={`${comment.id}-${reply.createdAt}-${index}`}>
+                <div className="doc-comment-author">
+                  <span style={{ backgroundColor: reply.color }} />
+                  <strong>{reply.author}</strong>
+                </div>
+                <p className="doc-comment-text">{reply.text}</p>
+              </div>
+            ))}
+            <form
+              className="doc-comment-reply-form"
+              onSubmit={(event) => addReply(event, comment.id)}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <input
+                value={replyDrafts[comment.id] || ""}
+                onChange={(event) => setReplyDrafts((current) => ({
+                  ...current,
+                  [comment.id]: event.target.value,
+                }))}
+                placeholder="Reply to thread…"
+                maxLength={1000}
+                aria-label={`Reply to ${comment.author}'s comment`}
+              />
+              <button type="submit" disabled={!(replyDrafts[comment.id] || "").trim()}>
+                Reply
+              </button>
+            </form>
+            <button
+              type="button"
+              className="doc-comment-resolve"
+              onClick={(event) => {
+                event.stopPropagation()
+                toggleResolved(comment.id)
+              }}
+            >
+              {comment.resolved ? "Reopen thread" : "Resolve thread"}
+            </button>
+          </article>
+        ))}
+      </div>
+
+      {draftRange && (
+        <form className="doc-comment-composer" onSubmit={saveComment}>
+          <p>“{draftRange.quote || "Selected text"}”</p>
+          <textarea
+            ref={commentInputRef}
+            value={commentText}
+            onChange={(event) => setCommentText(event.target.value)}
+            placeholder="Write a comment…"
+            maxLength={1000}
+            required
+          />
+          <div>
+            <button type="button" onClick={() => setDraftRange(null)}>Cancel</button>
+            <button type="submit" disabled={!commentText.trim()}>Comment</button>
+          </div>
+        </form>
+      )}
+
+      {!draftRange && (
+        <button
+          type="button"
+          className="doc-comment-add"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={startComment}
+          disabled={selectionEmpty}
+        >
+          + Comment on selection
+        </button>
+      )}
+    </aside>
+  )
+}
+
 // -----------------------------
 // Export helpers
 // -----------------------------
@@ -214,6 +456,9 @@ function escapeHtml(text) {
 
 export default function DocEditor({ ydoc, provider, user, room }) {
   const [exportOpen, setExportOpen] = useState(false)
+  const [commentsOpen, setCommentsOpen] = useState(false)
+  const [commentCount, setCommentCount] = useState(0)
+  const commentsMap = useMemo(() => ydoc.getMap("docComments"), [ydoc])
 
   const editor = useEditor(
     {
@@ -225,6 +470,7 @@ export default function DocEditor({ ydoc, provider, user, room }) {
         }),
         Placeholder.configure({ placeholder: "Start writing…" }),
         TextAlign.configure({ types: ["heading", "paragraph"] }),
+        CommentMark,
         Collaboration.configure({ document: ydoc, field: "doc" }),
         CollaborationCaret.configure({ provider, user }),
       ],
@@ -238,6 +484,13 @@ export default function DocEditor({ ydoc, provider, user, room }) {
   useEffect(() => {
     if (editor) editor.commands.updateUser(user)
   }, [editor, user])
+
+  useEffect(() => {
+    const updateCount = () => setCommentCount(commentsMap.size)
+    updateCount()
+    commentsMap.observe(updateCount)
+    return () => commentsMap.unobserve(updateCount)
+  }, [commentsMap])
 
   const stats = useEditorState({
     editor,
@@ -296,6 +549,14 @@ ${editor.getHTML()}
       <div className="doc-titlebar no-print flex items-center gap-2 px-3 py-2 bg-gray-900">
         <TitleInput ydoc={ydoc} />
         <VersionHistory ydoc={ydoc} mode="doc" user={user} editor={editor} />
+        <button
+          type="button"
+          className="doc-comments-toggle"
+          aria-expanded={commentsOpen}
+          onClick={() => setCommentsOpen((open) => !open)}
+        >
+          Comments <span>{commentCount}</span>
+        </button>
 
         <div className="relative">
           <button
@@ -320,10 +581,19 @@ ${editor.getHTML()}
       <Toolbar editor={editor} />
 
       {/* PAGE */}
-      <div className="doc-scroll flex-1 overflow-auto py-6 px-2 bg-neutral-700">
-        <div className="doc-page mx-auto bg-white text-gray-900 shadow-xl rounded-sm">
-          <EditorContent editor={editor} />
+      <div className="doc-editor-main flex flex-1 min-h-0">
+        <div className="doc-scroll flex-1 overflow-auto py-6 px-2 bg-neutral-700">
+          <div className="doc-page mx-auto bg-white text-gray-900 shadow-xl rounded-sm">
+            <EditorContent editor={editor} />
+          </div>
         </div>
+        <CommentPanel
+          editor={editor}
+          ydoc={ydoc}
+          user={user}
+          open={commentsOpen}
+          onClose={() => setCommentsOpen(false)}
+        />
       </div>
 
       {/* FOOTER */}

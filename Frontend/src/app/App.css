@@ -549,6 +549,280 @@ body,
   margin: 1.5em 0;
 }
 
+.doc-comment-mark {
+  border-bottom: 2px solid #f59e0b;
+  background: #fbbf2438;
+  cursor: pointer;
+}
+
+.doc-comments-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.doc-comments-toggle span {
+  display: inline-grid;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  padding: 0 5px;
+  color: #713f12;
+  background: #fde68a;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.doc-comments-toggle:hover {
+  background: var(--surface);
+}
+
+.doc-editor-main {
+  position: relative;
+}
+
+.doc-comments-panel {
+  display: none;
+  width: 0;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--text);
+  background: var(--surface);
+  border-left: 1px solid transparent;
+}
+
+.doc-comments-panel.is-open {
+  display: flex;
+  width: min(340px, 42vw);
+  min-width: 250px;
+  padding: 12px;
+  border-left-color: var(--border);
+}
+
+.doc-comments-header,
+.doc-comment-author {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.doc-comments-header {
+  justify-content: space-between;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.doc-comments-header > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.doc-comments-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.doc-comments-header span,
+.doc-comment-author time {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.doc-comments-header > button {
+  padding: 0 5px;
+  color: var(--muted);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.doc-comments-list {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  align-content: start;
+  gap: 10px;
+  padding: 10px 2px;
+  overflow: auto;
+}
+
+.doc-comments-empty {
+  margin: 0;
+  padding: 12px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.doc-comment-thread {
+  padding: 10px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.doc-comment-thread.is-resolved {
+  opacity: 0.72;
+}
+
+.doc-comment-quote {
+  display: block;
+  width: 100%;
+  margin-bottom: 8px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-comment-author {
+  min-width: 0;
+}
+
+.doc-comment-author > span {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.doc-comment-author strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-comment-author time {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.doc-comment-text {
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.doc-comment-reply {
+  margin: 8px 0 0 10px;
+  padding-left: 9px;
+  border-left: 2px solid var(--border);
+}
+
+.doc-comment-reply-form {
+  display: flex;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.doc-comment-reply-form input,
+.doc-comment-composer textarea {
+  min-width: 0;
+  flex: 1;
+  padding: 7px 8px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  outline: none;
+}
+
+.doc-comment-reply-form input:focus,
+.doc-comment-composer textarea:focus {
+  border-color: #fbbf24;
+}
+
+.doc-comment-reply-form button,
+.doc-comment-composer button[type="submit"] {
+  padding: 6px 8px;
+  color: #111827;
+  background: #fde68a;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.doc-comment-reply-form button:disabled,
+.doc-comment-composer button[type="submit"]:disabled,
+.doc-comment-add:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.doc-comment-resolve {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  text-decoration: underline;
+}
+
+.doc-comment-composer {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.doc-comment-composer > p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-comment-composer textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.doc-comment-composer > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.doc-comment-composer button {
+  padding: 6px 9px;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.doc-comment-add {
+  min-height: 34px;
+  color: #111827;
+  background: #fde68a;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.doc-comment-add:disabled {
+  color: var(--muted);
+  background: var(--surface-raised);
+}
+
 /* Placeholder on the empty first paragraph */
 .doc-content p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
