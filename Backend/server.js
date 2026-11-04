@@ -108,6 +108,13 @@ const createRoomLimit = rateLimit({
   legacyHeaders: false,
 });
 
+const createInviteLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 20,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+});
+
 app.get("/", (_req, res) => {
   res.status(200).json({ message: "Hello World!", success: true });
 });
@@ -174,7 +181,7 @@ async function roomNameIsTaken(room) {
   return Boolean(metadata?.size);
 }
 
-async function reserveRoomName(requestedRoom) {
+async function reserveRoomName(requestedRoom, ownerId) {
   if (requestedRoom) {
     if (!validRoom(requestedRoom)) {
       const error = new Error("Room names must use 1-40 letters, numbers, dashes, or underscores.");
@@ -188,6 +195,7 @@ async function reserveRoomName(requestedRoom) {
         throw error;
       }
       await ySocketIO.persistence?.provider?.setMeta(requestedRoom, "created", true);
+      await ySocketIO.persistence?.provider?.setMeta(requestedRoom, "ownerId", ownerId);
       return requestedRoom;
     });
   }
@@ -200,6 +208,7 @@ async function reserveRoomName(requestedRoom) {
       const reserved = await withRoomLock(candidate, async () => {
         if (await roomNameIsTaken(candidate)) return null;
         await ySocketIO.persistence?.provider?.setMeta(candidate, "created", true);
+        await ySocketIO.persistence?.provider?.setMeta(candidate, "ownerId", ownerId);
         return candidate;
       });
       if (reserved) return reserved;
@@ -224,12 +233,46 @@ app.post("/api/rooms", createRoomLimit, async (req, res, next) => {
     return res.status(400).json({ error: "Room name cannot be empty." });
   }
   try {
-    const reservedRoom = await reserveRoomName(room?.trim().toLowerCase());
+    const reservedRoom = await reserveRoomName(room?.trim().toLowerCase(), session.sub);
     return res.status(201).json({ room: reservedRoom });
   } catch (error) {
     if (error.status === 400 || error.status === 409) {
       return res.status(error.status).json({ error: error.message });
     }
+    return next(error);
+  }
+});
+
+app.post("/api/rooms/:room/invites", createInviteLimit, async (req, res, next) => {
+  const session = getRequestSession(req);
+  if (!session?.sub) return res.status(401).json({ error: "A valid room session is required." });
+
+  const { room } = req.params;
+  const { access } = req.body || {};
+  if (!validRoom(room) || !["edit", "view"].includes(access)) {
+    return res.status(400).json({ error: "Choose a valid room and invite access level." });
+  }
+
+  try {
+    const state = await getRoomState(room);
+    if (state.deleted) return res.status(404).json({ error: "This room no longer exists." });
+    if (state.ownerId !== session.sub) {
+      return res.status(403).json({ error: "Only the room owner can create invite links." });
+    }
+
+    state.inviteRequired = true;
+    await ySocketIO.persistence?.provider?.setMeta(room, "inviteRequired", true);
+    const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
+    const inviteToken = signPayload({
+      kind: "room-invite",
+      room,
+      access,
+      ownerId: state.ownerId,
+      version: state.accessVersion,
+      exp: expiresAt,
+    });
+    return res.status(201).json({ inviteToken, access, expiresAt });
+  } catch (error) {
     return next(error);
   }
 });
@@ -371,7 +414,15 @@ async function getRoomState(room) {
       const deleted = await ySocketIO.persistence?.provider?.getMeta(room, "deleted");
       if (deleted) return { deleted: true, ownerId: null, members: [] };
       const ownerId = await ySocketIO.persistence?.provider?.getMeta(room, "ownerId");
-      return { deleted: false, ownerId: ownerId || null, members: [] };
+      const inviteRequired = await ySocketIO.persistence?.provider?.getMeta(room, "inviteRequired");
+      const accessVersion = await ySocketIO.persistence?.provider?.getMeta(room, "accessVersion");
+      return {
+        deleted: false,
+        ownerId: ownerId || null,
+        inviteRequired: Boolean(inviteRequired),
+        accessVersion: Number(accessVersion) || 1,
+        members: [],
+      };
     })();
     roomStates.set(room, statePromise);
   }
@@ -382,12 +433,13 @@ function publicRoomState(state, selfId) {
   return {
     selfId,
     ownerId: state.ownerId,
-    members: state.members.map(({ socketId, userId, name, color, joinedAt }) => ({
+    members: state.members.map(({ socketId, userId, name, color, joinedAt, access }) => ({
       socketId,
       userId,
       name,
       color,
       joinedAt,
+      access,
     })),
   };
 }
@@ -419,7 +471,14 @@ async function removeMember(socket, room, state, socketId = socket.id) {
   const [removed] = state.members.splice(index, 1);
   if (state.ownerId === removed.userId && !state.members.some((member) => member.userId === removed.userId)) {
     const nextOwner = [...state.members].sort((a, b) => a.joinedAt - b.joinedAt)[0];
-    state.ownerId = nextOwner?.userId || null;
+    if (nextOwner) {
+      state.ownerId = nextOwner.userId;
+      state.accessVersion++;
+      nextOwner.access = "edit";
+      const nextOwnerSocket = socket.nsp.sockets.get(nextOwner.socketId);
+      if (nextOwnerSocket) nextOwnerSocket.data.access = "edit";
+      await ySocketIO.persistence?.provider?.setMeta(room, "accessVersion", state.accessVersion);
+    }
     await ySocketIO.persistence?.provider?.setMeta(room, "ownerId", state.ownerId);
     if (nextOwner && firestore) {
       try {
@@ -447,10 +506,25 @@ yjsNamespace.use(async (socket, next) => {
   const room = socket.nsp.name.replace(/^\/yjs\|/, "");
   if (!validRoom(room)) return next(new Error("Invalid room name."));
   try {
-    const cachedState = roomStates.has(room) ? await roomStates.get(room) : null;
-    if (cachedState?.deleted || await ySocketIO.persistence?.provider?.getMeta(room, "deleted")) {
+    const identity = verifyPayload(socket.handshake.auth?.sessionToken);
+    if (!identity?.sub) return next(new Error("This connection is not authorized."));
+    const state = await getRoomState(room);
+    if (state.deleted || await ySocketIO.persistence?.provider?.getMeta(room, "deleted")) {
       return next(new Error("This room has been deleted."));
     }
+    const invite = verifyPayload(socket.handshake.auth?.inviteToken);
+    const inviteIsValid = invite?.kind === "room-invite"
+      && invite.room === room
+      && invite.ownerId === state.ownerId
+      && invite.version === state.accessVersion
+      && ["edit", "view"].includes(invite.access);
+    if (state.inviteRequired && identity.sub !== state.ownerId && !inviteIsValid) {
+      return next(new Error("This room requires a valid invite link."));
+    }
+    socket.data.userId = identity.sub;
+    socket.data.access = identity.sub === state.ownerId
+      ? "edit"
+      : inviteIsValid ? invite.access : "edit";
 
     const ip = socket.handshake.address || "unknown";
     const active = ipConnections.get(ip) || 0;
@@ -479,6 +553,7 @@ yjsNamespace.on("connection", (socket) => {
           socket.disconnect(true);
           return;
         }
+        if (socket.data.access === "view") return;
         listener.call(this, update);
       });
     }
@@ -520,10 +595,20 @@ yjsNamespace.on("connection", (socket) => {
       existingMember.name = name;
       existingMember.color = color;
     } else {
-      state.members.push({ socketId: socket.id, userId: identity.sub, name, color, joinedAt: Date.now() });
+      state.members.push({
+        socketId: socket.id,
+        userId: identity.sub,
+        name,
+        color,
+        joinedAt: Date.now(),
+        access: identity.sub === state.ownerId ? "edit" : socket.data.access,
+      });
     }
     if (!state.ownerId) {
       state.ownerId = identity.sub;
+      socket.data.access = "edit";
+      const member = state.members.find((item) => item.socketId === socket.id);
+      if (member) member.access = "edit";
       await ySocketIO.persistence?.provider?.setMeta(room, "ownerId", state.ownerId);
     }
     await ySocketIO.persistence?.provider?.setMeta(room, "created", true);

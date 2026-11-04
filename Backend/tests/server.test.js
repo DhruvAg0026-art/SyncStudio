@@ -8,6 +8,8 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { after, before, test } from "node:test"
 import { randomBytes } from "node:crypto"
+import { io as connectSocket } from "socket.io-client"
+import * as Y from "yjs"
 
 const backendPath = fileURLToPath(new URL("../server.js", import.meta.url))
 let backend
@@ -120,4 +122,179 @@ test("guest sessions work while Firebase-only endpoints fail explicitly", async 
     headers: { authorization: `Bearer ${session.token}` },
   })
   assert.equal(documentsResponse.status, 403)
+})
+
+test("only the room owner can issue signed, access-scoped invite links", async () => {
+  const createSession = async () => {
+    const response = await fetch(`${baseUrl}/api/session`, { method: "POST" })
+    assert.equal(response.status, 201)
+    return response.json()
+  }
+  const ownerSession = await createSession()
+  const otherSession = await createSession()
+  const room = `invite-test-${randomBytes(3).toString("hex")}`
+  const roomResponse = await fetch(`${baseUrl}/api/rooms`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${ownerSession.token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ room }),
+  })
+  assert.equal(roomResponse.status, 201)
+
+  const createInvite = (token, access) => fetch(`${baseUrl}/api/rooms/${room}/invites`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ access }),
+  })
+
+  const unauthorized = await fetch(`${baseUrl}/api/rooms/${room}/invites`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ access: "view" }),
+  })
+  assert.equal(unauthorized.status, 401)
+
+  const forbidden = await createInvite(otherSession.token, "edit")
+  assert.equal(forbidden.status, 403)
+
+  const invalidAccess = await createInvite(ownerSession.token, "admin")
+  assert.equal(invalidAccess.status, 400)
+
+  for (const access of ["view", "edit"]) {
+    const response = await createInvite(ownerSession.token, access)
+    assert.equal(response.status, 201)
+    const invite = await response.json()
+    const claims = JSON.parse(Buffer.from(invite.inviteToken.split(".")[0], "base64url").toString())
+    assert.equal(claims.kind, "room-invite")
+    assert.equal(claims.room, room)
+    assert.equal(claims.access, access)
+    assert.equal(claims.ownerId, JSON.parse(Buffer.from(ownerSession.token.split(".")[0], "base64url").toString()).sub)
+    assert.ok(invite.expiresAt > Date.now())
+  }
+})
+
+test("invite roles are enforced during socket authorization and document synchronization", async () => {
+  const createSession = async () => {
+    const response = await fetch(`${baseUrl}/api/session`, { method: "POST" })
+    assert.equal(response.status, 201)
+    return response.json()
+  }
+  const ownerSession = await createSession()
+  const viewerSession = await createSession()
+  const editorSession = await createSession()
+  const room = `invite-sync-${randomBytes(3).toString("hex")}`
+  const roomResponse = await fetch(`${baseUrl}/api/rooms`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${ownerSession.token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ room }),
+  })
+  assert.equal(roomResponse.status, 201)
+
+  const createInvite = async (access) => {
+    const response = await fetch(`${baseUrl}/api/rooms/${room}/invites`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${ownerSession.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ access }),
+    })
+    assert.equal(response.status, 201)
+    return (await response.json()).inviteToken
+  }
+  const viewInvite = await createInvite("view")
+  const editInvite = await createInvite("edit")
+  const connect = (sessionToken, inviteToken) => connectSocket(`${baseUrl}/yjs|${room}`, {
+    autoConnect: false,
+    reconnection: false,
+    auth: { sessionToken, inviteToken },
+  })
+  const waitForConnect = (socket) => new Promise((resolve, reject) => {
+    socket.once("connect", resolve)
+    socket.once("connect_error", reject)
+    socket.connect()
+  })
+
+  const sockets = []
+  try {
+    const directSocket = connect(viewerSession.token)
+    sockets.push(directSocket)
+    const rejected = new Promise((resolve) => directSocket.once("connect_error", resolve))
+    directSocket.connect()
+    const rejection = await rejected
+    assert.match(rejection.message, /valid invite link/)
+
+    const viewerSocket = connect(viewerSession.token, viewInvite)
+    const ownerSocket = connect(ownerSession.token)
+    const editorSocket = connect(editorSession.token, editInvite)
+    sockets.push(viewerSocket, ownerSocket, editorSocket)
+    await Promise.all([waitForConnect(viewerSocket), waitForConnect(ownerSocket), waitForConnect(editorSocket)])
+    const joinRoom = (socket, name) => new Promise((resolve) => {
+      socket.emit("room:join", { name, color: "#60a5fa" }, resolve)
+    })
+    assert.equal((await joinRoom(ownerSocket, "Owner")).state.ownerId, JSON.parse(
+      Buffer.from(ownerSession.token.split(".")[0], "base64url").toString()
+    ).sub)
+    assert.equal((await joinRoom(viewerSocket, "Viewer")).state.members[1].access, "view")
+    assert.equal((await joinRoom(editorSocket, "Editor")).state.members[2].access, "edit")
+
+    const received = []
+    const observer = new Y.Doc()
+    ownerSocket.on("sync-update", (update) => {
+      Y.applyUpdate(observer, new Uint8Array(update))
+      received.push(update)
+    })
+
+    const viewerUpdate = new Y.Doc()
+    viewerUpdate.getText("invite-check").insert(0, "viewer edit")
+    viewerSocket.emit("sync-update", Y.encodeStateAsUpdate(viewerUpdate))
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    assert.equal(received.length, 0)
+    assert.equal(observer.getText("invite-check").toString(), "")
+
+    const editorUpdate = new Y.Doc()
+    editorUpdate.getText("invite-check").insert(0, "editor edit")
+    editorSocket.emit("sync-update", Y.encodeStateAsUpdate(editorUpdate))
+    const deadline = Date.now() + 3000
+    while (!observer.getText("invite-check").length && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    assert.equal(observer.getText("invite-check").toString(), "editor edit")
+
+    const transferredState = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Ownership transfer was not broadcast.")), 3000)
+      const onState = (state) => {
+        if (state.ownerId !== JSON.parse(
+          Buffer.from(viewerSession.token.split(".")[0], "base64url").toString()
+        ).sub) return
+        clearTimeout(timeout)
+        resolve(state)
+      }
+      editorSocket.on("room:state", onState)
+    })
+    ownerSocket.disconnect()
+    const newState = await transferredState
+    assert.equal(
+      newState.members.find((member) => member.userId === newState.ownerId).access,
+      "edit"
+    )
+
+    const staleInviteSocket = connect(editorSession.token, editInvite)
+    sockets.push(staleInviteSocket)
+    const staleInviteRejection = new Promise((resolve) => {
+      staleInviteSocket.once("connect_error", resolve)
+    })
+    staleInviteSocket.connect()
+    assert.match((await staleInviteRejection).message, /valid invite link/)
+  } finally {
+    for (const socket of sockets) socket.disconnect()
+  }
 })

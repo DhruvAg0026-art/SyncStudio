@@ -17,7 +17,7 @@ function renderMessage(text) {
   })
 }
 
-export default function ChatSidebar({ ydoc, user, clientId, open, onToggle }) {
+export default function ChatSidebar({ ydoc, user, clientId, open, onToggle, readOnly = false }) {
   const [messages, setMessages] = useState([])
   const [draft, setDraft] = useState("")
   const [unread, setUnread] = useState(0)
@@ -30,7 +30,7 @@ export default function ChatSidebar({ ydoc, user, clientId, open, onToggle }) {
     const chat = ydoc.getArray("chat")
 
     const updateMessages = () => {
-      if (chat.length > 200) {
+      if (!readOnly && chat.length > 200) {
         ydoc.transact(() => chat.delete(0, chat.length - 200))
       }
 
@@ -52,7 +52,7 @@ export default function ChatSidebar({ ydoc, user, clientId, open, onToggle }) {
     chat.observe(updateMessages)
     updateMessages()
     return () => chat.unobserve(updateMessages)
-  }, [ydoc, clientId, open])
+  }, [ydoc, clientId, open, readOnly])
 
   useEffect(() => {
     if (open && stickToBottomRef.current && containerRef.current) {
@@ -66,6 +66,7 @@ export default function ChatSidebar({ ydoc, user, clientId, open, onToggle }) {
 
   const sendMessage = (event) => {
     event.preventDefault()
+    if (readOnly) return
     const text = draft.trim()
     if (!text || !ydoc || text.length > 2000) return
 
@@ -115,22 +116,24 @@ export default function ChatSidebar({ ydoc, user, clientId, open, onToggle }) {
             ))}
             <div />
           </div>
-          <form className="chat-compose" onSubmit={sendMessage}>
-            <textarea
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault()
-                  event.currentTarget.form.requestSubmit()
-                }
-              }}
-              maxLength={2000}
-              placeholder="Message (Enter to send)"
-              rows={3}
-            />
-            <button type="submit" disabled={!draft.trim()}>Send</button>
-          </form>
+          {!readOnly && (
+            <form className="chat-compose" onSubmit={sendMessage}>
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault()
+                    event.currentTarget.form.requestSubmit()
+                  }
+                }}
+                maxLength={2000}
+                placeholder="Message (Enter to send)"
+                rows={3}
+              />
+              <button type="submit" disabled={!draft.trim()}>Send</button>
+            </form>
+          )}
         </aside>
       )}
     </>

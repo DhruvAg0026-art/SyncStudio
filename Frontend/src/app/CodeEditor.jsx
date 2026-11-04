@@ -36,7 +36,7 @@ const RUNNABLE_LANGUAGES = new Set([
   "php", "ruby", "swift", "kotlin", "dart", "lua",
 ])
 
-export default function CodeEditor({ ydoc, provider, theme = "dark" }) {
+export default function CodeEditor({ ydoc, provider, theme = "dark", readOnly = false }) {
   const [editor, setEditor] = useState(null)
   const [language, setLanguage] = useState("javascript")
   const [outputOpen, setOutputOpen] = useState(false)
@@ -52,7 +52,7 @@ export default function CodeEditor({ ydoc, provider, theme = "dark" }) {
       if (LANGUAGES.some(([value]) => value === sharedLanguage)) {
         setLanguage(sharedLanguage)
       } else if (sharedLanguage == null) {
-        settings.set("language", "javascript")
+        if (!readOnly) settings.set("language", "javascript")
       } else {
         setLanguage("javascript")
       }
@@ -62,7 +62,7 @@ export default function CodeEditor({ ydoc, provider, theme = "dark" }) {
     updateLanguage()
 
     return () => settings.unobserve(updateLanguage)
-  }, [ydoc])
+  }, [ydoc, readOnly])
 
   useEffect(() => {
     const sharedRun = ydoc.getMap("run")
@@ -86,6 +86,7 @@ export default function CodeEditor({ ydoc, provider, theme = "dark" }) {
   }, [editor, ydoc, provider])
 
   const runCode = async () => {
+    if (readOnly) return
     setOutputOpen(true)
     setRunning(true)
     setRunError("")
@@ -122,6 +123,7 @@ export default function CodeEditor({ ydoc, provider, theme = "dark" }) {
           id="code-language"
           value={language}
           onChange={(event) => ydoc.getMap("settings").set("language", event.target.value)}
+          disabled={readOnly}
           aria-label="Code language"
         >
           {LANGUAGES.map(([value, label]) => (
@@ -132,7 +134,7 @@ export default function CodeEditor({ ydoc, provider, theme = "dark" }) {
           type="button"
           className="run-code-button"
           onClick={runCode}
-          disabled={running || !RUNNABLE_LANGUAGES.has(language)}
+          disabled={readOnly || running || !RUNNABLE_LANGUAGES.has(language)}
           title={RUNNABLE_LANGUAGES.has(language) ? "Run shared code" : "This language is not supported by the runner"}
         >
           {running ? "Running…" : "Run"}
@@ -144,6 +146,7 @@ export default function CodeEditor({ ydoc, provider, theme = "dark" }) {
           ydoc={ydoc}
           mode="code"
           user={provider.awareness.getLocalState()?.user}
+          readOnly={readOnly}
         />
         <span className="code-language-hint">Syntax highlighting for 26 languages</span>
       </div>
@@ -152,7 +155,7 @@ export default function CodeEditor({ ydoc, provider, theme = "dark" }) {
           height="100%"
           language={language}
           theme={theme === "light" ? "vs" : "vs-dark"}
-          options={{ fontSize: 14, minimap: { enabled: false }, automaticLayout: true }}
+          options={{ fontSize: 14, minimap: { enabled: false }, automaticLayout: true, readOnly }}
           onMount={(mountedEditor) => setEditor(mountedEditor)}
         />
       </div>

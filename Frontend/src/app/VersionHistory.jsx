@@ -57,13 +57,14 @@ function createSnapshot(ydoc, mode, content) {
   }
 }
 
-export default function VersionHistory({ ydoc, mode, user, editor }) {
+export default function VersionHistory({ ydoc, mode, user, editor, readOnly = false }) {
   const [open, setOpen] = useState(false)
   const [versions, setVersions] = useState([])
   const [selectedVersion, setSelectedVersion] = useState(null)
   const [error, setError] = useState("")
 
   const saveSnapshot = useCallback(() => {
+    if (readOnly) return
     try {
       const value = mode === "code" ? ydoc.getText("monaco").toString() : editor?.getJSON()
       if (value == null) {
@@ -87,7 +88,7 @@ export default function VersionHistory({ ydoc, mode, user, editor }) {
     } catch (snapshotError) {
       setError(snapshotError.message || "Could not save this version.")
     }
-  }, [ydoc, mode, user, editor])
+  }, [ydoc, mode, user, editor, readOnly])
 
   useEffect(() => {
     const sharedVersions = ydoc.getArray("versions")
@@ -102,6 +103,7 @@ export default function VersionHistory({ ydoc, mode, user, editor }) {
   }, [ydoc])
 
   useEffect(() => {
+    if (readOnly) return undefined
     let timer
     const scheduleSnapshot = () => {
       clearTimeout(timer)
@@ -120,7 +122,7 @@ export default function VersionHistory({ ydoc, mode, user, editor }) {
       if (text) text.unobserve(onDocUpdate)
       else if (editor) editor.off("update", onDocUpdate)
     }
-  }, [ydoc, mode, editor, saveSnapshot])
+  }, [ydoc, mode, editor, saveSnapshot, readOnly])
 
   const restore = (version) => {
     if (!window.confirm("Restore this version for everyone in the room?")) return
@@ -162,7 +164,9 @@ export default function VersionHistory({ ydoc, mode, user, editor }) {
             <h2>Version history</h2>
             <button type="button" onClick={() => setOpen(false)} aria-label="Close version history">×</button>
           </div>
-          <button type="button" className="version-save" onClick={saveSnapshot}>Save version</button>
+          {!readOnly && (
+            <button type="button" className="version-save" onClick={saveSnapshot}>Save version</button>
+          )}
           {error && <p className="version-error" role="alert">{error}</p>}
           <ul>
             {versions.filter((version) => version.mode === mode).slice().reverse().map((version) => (
@@ -181,7 +185,9 @@ export default function VersionHistory({ ydoc, mode, user, editor }) {
           {selectedVersion && (
             <div className="version-preview">
               <pre>{preview(selectedVersion).slice(0, 5000)}</pre>
-              <button type="button" onClick={() => restore(selectedVersion)}>Restore version</button>
+              {!readOnly && (
+                <button type="button" onClick={() => restore(selectedVersion)}>Restore version</button>
+              )}
             </div>
           )}
         </aside>

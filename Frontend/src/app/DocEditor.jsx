@@ -82,7 +82,7 @@ const CommentMark = Mark.create({
 // Title (synced through a Y.Text so concurrent edits merge)
 // -----------------------------
 
-function TitleInput({ ydoc }) {
+function TitleInput({ ydoc, readOnly }) {
   const yTitle = useMemo(() => ydoc.getText("title"), [ydoc])
   const [value, setValue] = useState(() => yTitle.toString())
 
@@ -94,6 +94,7 @@ function TitleInput({ ydoc }) {
   }, [yTitle])
 
   const handleChange = (e) => {
+    if (readOnly) return
     const next = e.target.value
     const prev = yTitle.toString()
 
@@ -119,6 +120,7 @@ function TitleInput({ ydoc }) {
     <input
       value={value}
       onChange={handleChange}
+      readOnly={readOnly}
       placeholder="Untitled document"
       maxLength={120}
       className="
@@ -256,7 +258,7 @@ function Toolbar({ editor, onUploadImage }) {
   )
 }
 
-function CommentPanel({ editor, ydoc, user, open, onClose }) {
+function CommentPanel({ editor, ydoc, user, open, onClose, readOnly }) {
   const commentsMap = useMemo(() => ydoc.getMap("docComments"), [ydoc])
   const selectionEmpty = useEditorState({
     editor,
@@ -407,40 +409,44 @@ function CommentPanel({ editor, ydoc, user, open, onClose }) {
                 <p className="doc-comment-text">{reply.text}</p>
               </div>
             ))}
-            <form
-              className="doc-comment-reply-form"
-              onSubmit={(event) => addReply(event, comment.id)}
-              onClick={(event) => event.stopPropagation()}
-            >
-              <input
-                value={replyDrafts[comment.id] || ""}
-                onChange={(event) => setReplyDrafts((current) => ({
-                  ...current,
-                  [comment.id]: event.target.value,
-                }))}
-                placeholder="Reply to thread…"
-                maxLength={1000}
-                aria-label={`Reply to ${comment.author}'s comment`}
-              />
-              <button type="submit" disabled={!(replyDrafts[comment.id] || "").trim()}>
-                Reply
-              </button>
-            </form>
-            <button
-              type="button"
-              className="doc-comment-resolve"
-              onClick={(event) => {
-                event.stopPropagation()
-                toggleResolved(comment.id)
-              }}
-            >
-              {comment.resolved ? "Reopen thread" : "Resolve thread"}
-            </button>
+            {!readOnly && (
+              <>
+                <form
+                  className="doc-comment-reply-form"
+                  onSubmit={(event) => addReply(event, comment.id)}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <input
+                    value={replyDrafts[comment.id] || ""}
+                    onChange={(event) => setReplyDrafts((current) => ({
+                      ...current,
+                      [comment.id]: event.target.value,
+                    }))}
+                    placeholder="Reply to thread…"
+                    maxLength={1000}
+                    aria-label={`Reply to ${comment.author}'s comment`}
+                  />
+                  <button type="submit" disabled={!(replyDrafts[comment.id] || "").trim()}>
+                    Reply
+                  </button>
+                </form>
+                <button
+                  type="button"
+                  className="doc-comment-resolve"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    toggleResolved(comment.id)
+                  }}
+                >
+                  {comment.resolved ? "Reopen thread" : "Resolve thread"}
+                </button>
+              </>
+            )}
           </article>
         ))}
       </div>
 
-      {draftRange && (
+      {!readOnly && draftRange && (
         <form className="doc-comment-composer" onSubmit={saveComment}>
           <p>“{draftRange.quote || "Selected text"}”</p>
           <textarea
@@ -458,7 +464,7 @@ function CommentPanel({ editor, ydoc, user, open, onClose }) {
         </form>
       )}
 
-      {!draftRange && (
+      {!readOnly && !draftRange && (
         <button
           type="button"
           className="doc-comment-add"
@@ -500,7 +506,7 @@ function escapeHtml(text) {
 // Document editor
 // -----------------------------
 
-export default function DocEditor({ ydoc, provider, user, room }) {
+export default function DocEditor({ ydoc, provider, user, room, readOnly = false }) {
   const [exportOpen, setExportOpen] = useState(false)
   const [commentsOpen, setCommentsOpen] = useState(false)
   const [commentCount, setCommentCount] = useState(0)
@@ -531,8 +537,12 @@ export default function DocEditor({ ydoc, provider, user, room }) {
   )
 
   useEffect(() => {
-    if (editor) editor.commands.updateUser(user)
+    if (editor && !editor.isDestroyed && editor.schema) editor.commands.updateUser(user)
   }, [editor, user])
+
+  useEffect(() => {
+    if (editor && !editor.isDestroyed) editor.setOptions({ editable: !readOnly })
+  }, [editor, readOnly])
 
   useEffect(() => {
     const updateCount = () => setCommentCount(commentsMap.size)
@@ -544,7 +554,7 @@ export default function DocEditor({ ydoc, provider, user, room }) {
   const stats = useEditorState({
     editor,
     selector: ({ editor }) => {
-      const text = editor ? editor.getText().trim() : ""
+      const text = editor && !editor.isDestroyed && editor.schema ? editor.getText().trim() : ""
       return {
         words: text ? text.split(/\s+/).length : 0,
         chars: text.length,
@@ -552,7 +562,7 @@ export default function DocEditor({ ydoc, provider, user, room }) {
     },
   })
 
-  if (!editor) return null
+  if (!editor || editor.isDestroyed || !editor.schema) return null
 
   const handleImageUpload = (event) => {
     const file = event.target.files?.[0]
@@ -627,8 +637,8 @@ ${editor.getHTML()}
 
       {/* TITLE + EXPORT */}
       <div className="doc-titlebar no-print flex items-center gap-2 px-3 py-2 bg-gray-900">
-        <TitleInput ydoc={ydoc} />
-        <VersionHistory ydoc={ydoc} mode="doc" user={user} editor={editor} />
+        <TitleInput ydoc={ydoc} readOnly={readOnly} />
+        <VersionHistory ydoc={ydoc} mode="doc" user={user} editor={editor} readOnly={readOnly} />
         <button
           type="button"
           className="doc-comments-toggle"
@@ -658,16 +668,20 @@ ${editor.getHTML()}
         </div>
       </div>
 
-      <input
-        ref={imageInputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/gif,image/webp"
-        className="hidden"
-        aria-label="Choose an image to upload"
-        onChange={handleImageUpload}
-      />
-      <Toolbar editor={editor} onUploadImage={() => imageInputRef.current?.click()} />
-      {imageError && <p className="doc-image-error no-print" role="alert">{imageError}</p>}
+      {!readOnly && (
+        <>
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            className="hidden"
+            aria-label="Choose an image to upload"
+            onChange={handleImageUpload}
+          />
+          <Toolbar editor={editor} onUploadImage={() => imageInputRef.current?.click()} />
+          {imageError && <p className="doc-image-error no-print" role="alert">{imageError}</p>}
+        </>
+      )}
 
       {/* PAGE */}
       <div className="doc-editor-main flex flex-1 min-h-0">
@@ -682,6 +696,7 @@ ${editor.getHTML()}
           user={user}
           open={commentsOpen}
           onClose={() => setCommentsOpen(false)}
+          readOnly={readOnly}
         />
       </div>
 

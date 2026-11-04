@@ -14,6 +14,7 @@ Live app: https://sync-studio-sooty.vercel.app/
 - Doc mode comments anchored to selected text, with shared replies and resolve/reopen
 - Doc mode image uploads (PNG, JPEG, GIF, or WebP; up to 600 KB per image) sync through Yjs
 - Live colored cursors with user names
+- Owners can create signed, 30-day edit or view-only invite links; once enabled, new room joins require a valid link and the backend rejects viewer edits
 - Rooms via URL (`?room=my-room&mode=doc`) and a "Copy invite link" button
 - Per-user dark/light theme, editable profile, recent rooms, and unique room-name generation
 - Optional Google sign-in with an owner-only My Documents dashboard

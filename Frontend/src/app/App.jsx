@@ -41,6 +41,7 @@ function readInitialState() {
     color: /^#[0-9a-f]{6}$/i.test(profile.color || "") ? profile.color : colorFor(username),
     room: cleanRoom(params.get("room")) || DEFAULT_ROOM,
     mode: params.get("mode") === "code" ? "code" : "doc",
+    inviteToken: params.get("invite") || "",
   }
 }
 
@@ -121,7 +122,8 @@ function App() {
   const [room, setRoom] = useState(initial.room)
   const [joinRoom, setJoinRoom] = useState(initial.room)
   const [mode, setMode] = useState(initial.mode)
-  const [copied, setCopied] = useState(false)
+  const [inviteToken, setInviteToken] = useState(initial.inviteToken)
+  const [copied, setCopied] = useState("")
   const [profileColor, setProfileColor] = useState(initial.color)
   const [profileOpen, setProfileOpen] = useState(false)
   const [profileNameDraft, setProfileNameDraft] = useState(initial.username)
@@ -132,6 +134,9 @@ function App() {
   const [chatOpen, setChatOpen] = useState(false)
   const [roomCreateError, setRoomCreateError] = useState("")
   const [roomCreating, setRoomCreating] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
+  const [shareBusy, setShareBusy] = useState("")
+  const [shareError, setShareError] = useState("")
   const [authUser, setAuthUser] = useState(null)
   const [authReady, setAuthReady] = useState(!auth)
   const [authError, setAuthError] = useState("")
@@ -146,11 +151,12 @@ function App() {
     status,
     members,
     ownerId,
+    accessRole,
     roomNotice,
     leaveRoom,
     kickMember,
     deleteRoom,
-  } = useCollab(room, authReady ? username : "", profileColor, authUser)
+  } = useCollab(room, authReady ? username : "", profileColor, authUser, inviteToken)
 
   const selfSocketId = session?.provider.socket.id
   const isOwner = members.some((member) => member.socketId === selfSocketId && member.userId === ownerId)
@@ -226,8 +232,9 @@ function App() {
   useEffect(() => {
     if (!username) return
     const params = new URLSearchParams({ room, mode })
+    if (inviteToken) params.set("invite", inviteToken)
     window.history.replaceState({}, "", `?${params.toString()}`)
-  }, [username, room, mode])
+  }, [username, room, mode, inviteToken])
 
   useEffect(() => {
     if (!username) return
@@ -303,6 +310,7 @@ function App() {
 
     setJoinName(name)
     setRoom(roomName)
+    if (roomName !== room) setInviteToken("")
     setUsername(name)
   }
 
@@ -333,6 +341,7 @@ function App() {
   const openRecentRoom = (recent) => {
     setJoinRoom(recent.room)
     setMode(recent.mode)
+    setInviteToken("")
     const name = joinName.trim()
     if (!name) return
     try {
@@ -401,6 +410,7 @@ function App() {
         // The room can still be opened without persistent browser storage.
       }
       setJoinName(name)
+      setInviteToken("")
       setRoom(result.room)
       setUsername(name)
     } catch (error) {
@@ -429,20 +439,49 @@ function App() {
     setJoinName(name)
     setJoinRoom(document.room)
     setMode("doc")
+    setInviteToken("")
     setRoom(document.room)
     setUsername(name)
   }
 
-  const handleCopyLink = async () => {
-    const params = new URLSearchParams({ room, mode })
-    const link = `${window.location.origin}${window.location.pathname}?${params.toString()}`
-
+  const handleCopyLink = async (access) => {
+    setShareError("")
+    setShareBusy(access || "link")
     try {
-      await navigator.clipboard.writeText(link)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      window.prompt("Copy this link", link)
+      let linkInvite = inviteToken
+      if (access) {
+        const sessionToken = await getSessionToken(authUser)
+        const response = await fetch(
+          `${import.meta.env.VITE_CONNECT.replace(/\/+$/, "")}/api/rooms/${encodeURIComponent(room)}/invites`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${sessionToken}`,
+            },
+            body: JSON.stringify({ access }),
+          }
+        )
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || "Could not create an invite link.")
+        linkInvite = result.inviteToken
+      }
+
+      const params = new URLSearchParams({ room, mode })
+      if (linkInvite) params.set("invite", linkInvite)
+      const link = `${window.location.origin}${window.location.pathname}?${params.toString()}`
+      try {
+        await navigator.clipboard.writeText(link)
+      } catch {
+        window.prompt("Copy this link", link)
+      }
+      setCopied(access || "link")
+      setTimeout(() => setCopied(""), 1500)
+      setShareOpen(false)
+    } catch (error) {
+      setShareError(error.message || "Could not create an invite link.")
+    } finally {
+      setShareBusy("")
     }
   }
 
@@ -643,6 +682,9 @@ function App() {
           <span className={`w-2 h-2 rounded-full ${statusInfo.dot}`} />
           {statusInfo.label}
         </span>
+        <span className="room-access-badge">
+          {accessRole === null ? "Checking access…" : accessRole === "view" ? "View-only access" : "Edit access"}
+        </span>
 
         <span className="text-sm text-gray-400 md:hidden">{users.length} online</span>
 
@@ -652,13 +694,42 @@ function App() {
             {tab("code", "Code")}
           </div>
 
-          <button
-            type="button"
-            onClick={handleCopyLink}
-            className="px-3 py-1.5 rounded-lg border border-gray-700 text-sm hover:bg-gray-800"
-          >
-            {copied ? "Copied!" : "Copy invite link"}
-          </button>
+          {isOwner ? (
+            <div className="share-menu">
+              <button
+                type="button"
+                onClick={() => {
+                  setShareError("")
+                  setShareOpen((open) => !open)
+                }}
+                aria-expanded={shareOpen}
+                className="px-3 py-1.5 rounded-lg border border-gray-700 text-sm hover:bg-gray-800"
+              >
+                {copied ? "Copied!" : "Share"}
+              </button>
+              {shareOpen && (
+                <div className="share-popover">
+                  <p>Creating either link requires a valid invite for future room joins. Links expire in 30 days.</p>
+                  <button type="button" onClick={() => handleCopyLink("edit")} disabled={Boolean(shareBusy)}>
+                    {shareBusy === "edit" ? "Creating…" : "Copy edit link"}
+                  </button>
+                  <button type="button" onClick={() => handleCopyLink("view")} disabled={Boolean(shareBusy)}>
+                    {shareBusy === "view" ? "Creating…" : "Copy view-only link"}
+                  </button>
+                  {shareError && <p className="share-error" role="alert">{shareError}</p>}
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => handleCopyLink()}
+              disabled={Boolean(shareBusy)}
+              className="px-3 py-1.5 rounded-lg border border-gray-700 text-sm hover:bg-gray-800"
+            >
+              {copied === "link" ? "Copied!" : "Copy invite link"}
+            </button>
+          )}
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
           {session && (
             <ChatSidebar
@@ -667,6 +738,7 @@ function App() {
               clientId={session.provider.awareness.clientID}
               open={chatOpen}
               onToggle={() => setChatOpen((open) => !open)}
+              readOnly={accessRole === "view"}
             />
           )}
           <div className="profile-menu">
@@ -779,6 +851,7 @@ function App() {
                 />
                 <span className="truncate">{user.name}</span>
                 {user.userId === ownerId && <span className="text-xs room-owner-badge">owner</span>}
+                {user.access === "view" && <span className="text-xs room-you-badge">view-only</span>}
                 {user.socketId === selfSocketId && <span className="ml-auto text-xs room-you-badge">you</span>}
                 {isOwner && user.socketId !== selfSocketId && user.userId !== ownerId && (
                   <button
@@ -800,7 +873,7 @@ function App() {
         {/* EDITOR */}
 
         <section className="app-editor flex-1 min-w-0 bg-neutral-800 rounded-lg overflow-hidden">
-          {!session ? (
+          {!session || accessRole === null ? (
             loading
           ) : (
             <Suspense fallback={loading}>
@@ -810,6 +883,7 @@ function App() {
                   ydoc={session.ydoc}
                   provider={session.provider}
                   theme={theme}
+                  readOnly={accessRole === "view"}
                 />
               ) : (
                 <DocEditor
@@ -818,6 +892,7 @@ function App() {
                   provider={session.provider}
                   user={session.user}
                   room={room}
+                  readOnly={accessRole === "view"}
                 />
               )}
             </Suspense>

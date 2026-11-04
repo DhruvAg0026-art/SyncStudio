@@ -73,12 +73,13 @@ export function colorFor(name) {
 //   ydoc.getText("monaco")        -> code editor content
 //   ydoc.getXmlFragment("doc")    -> rich-text document content
 //   ydoc.getText("title")         -> document title
-export function useCollab(room, username, color = colorFor(username || ""), firebaseUser = null) {
+export function useCollab(room, username, color = colorFor(username || ""), firebaseUser = null, inviteToken = "") {
   const [session, setSession] = useState(null)
   const [users, setUsers] = useState([])
   const [status, setStatus] = useState("connecting")
   const [members, setMembers] = useState([])
   const [ownerId, setOwnerId] = useState(null)
+  const [accessRole, setAccessRole] = useState(null)
   const [roomNotice, setRoomNotice] = useState("")
   const hasUsername = Boolean(username)
   const joinedRoomRef = useRef(false)
@@ -112,7 +113,7 @@ export function useCollab(room, username, color = colorFor(username || ""), fire
           import.meta.env.VITE_CONNECT,
           room,
           ydoc,
-          { autoConnect: true, auth: { sessionToken } }
+          { autoConnect: true, auth: { sessionToken, inviteToken } }
         )
 
         const updateUsers = () => {
@@ -173,6 +174,8 @@ export function useCollab(room, username, color = colorFor(username || ""), fire
         onRoomState = (state) => {
           setMembers(state.members || [])
           setOwnerId(state.ownerId || null)
+          const ownMember = state.members?.find((item) => item.socketId === provider.socket.id)
+          if (ownMember) setAccessRole(ownMember.access || "edit")
         }
         joinRoom = () => {
           const profile = profileRef.current
@@ -195,8 +198,8 @@ export function useCollab(room, username, color = colorFor(username || ""), fire
         }
         onKicked = () => setRoomNotice("You were removed from this room by its owner.")
         onDeleted = () => setRoomNotice("This room was deleted by its owner.")
-        onConnectError = () => {
-          setRoomNotice("Could not join this room. It may have been deleted or the session expired.")
+        onConnectError = (error) => {
+          setRoomNotice(error?.message || "Could not join this room. Check the invite link and try again.")
         }
 
         provider.awareness.on("change", onAwareness)
@@ -242,10 +245,11 @@ export function useCollab(room, username, color = colorFor(username || ""), fire
       setUsers([])
       setMembers([])
       setOwnerId(null)
+      setAccessRole(null)
       setStatus("connecting")
       setRoomNotice("")
     }
-  }, [room, hasUsername, firebaseUser?.uid])
+  }, [room, hasUsername, firebaseUser?.uid, inviteToken])
 
   const provider = session?.provider
 
@@ -273,5 +277,5 @@ export function useCollab(room, username, color = colorFor(username || ""), fire
     if (response?.error) setRoomNotice(response.error)
   })
 
-  return { session, users, status, members, ownerId, roomNotice, leaveRoom, kickMember, deleteRoom }
+  return { session, users, status, members, ownerId, accessRole, roomNotice, leaveRoom, kickMember, deleteRoom }
 }
