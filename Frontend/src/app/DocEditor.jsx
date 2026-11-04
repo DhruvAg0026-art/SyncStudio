@@ -1,4 +1,4 @@
-import { Mark, mergeAttributes } from "@tiptap/core"
+import { Mark, mergeAttributes, Node } from "@tiptap/core"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useEditor, EditorContent, useEditorState } from "@tiptap/react"
 import StarterKit from "@tiptap/starter-kit"
@@ -9,6 +9,51 @@ import Placeholder from "@tiptap/extension-placeholder"
 import TurndownService from "turndown"
 import * as Y from "yjs"
 import VersionHistory from "./VersionHistory"
+
+const MAX_IMAGE_BYTES = 600 * 1024
+const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"])
+
+function safeImageSource(source) {
+  if (typeof source !== "string" || source.length > MAX_IMAGE_BYTES * 2) return null
+  return /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(source)
+    ? source
+    : null
+}
+
+const ImageNode = Node.create({
+  name: "image",
+  group: "block",
+  atom: true,
+  draggable: true,
+
+  addAttributes() {
+    return {
+      src: {
+        default: null,
+        parseHTML: (element) => safeImageSource(element.getAttribute("src")),
+        renderHTML: (attributes) => {
+          const src = safeImageSource(attributes.src)
+          return src ? { src } : {}
+        },
+      },
+      alt: {
+        default: "",
+        renderHTML: (attributes) => ({ alt: attributes.alt || "" }),
+      },
+    }
+  },
+
+  parseHTML() {
+    return [{
+      tag: "img",
+      getAttrs: (element) => safeImageSource(element.getAttribute("src")) ? null : false,
+    }]
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ["img", mergeAttributes(HTMLAttributes, { class: "doc-image", loading: "lazy" })]
+  },
+})
 
 const CommentMark = Mark.create({
   name: "comment",
@@ -115,7 +160,7 @@ function Divider() {
   return <span className="w-px h-5 bg-gray-700 mx-1" />
 }
 
-function Toolbar({ editor }) {
+function Toolbar({ editor, onUploadImage }) {
   const s = useEditorState({
     editor,
     selector: ({ editor }) => ({
@@ -191,6 +236,7 @@ function Toolbar({ editor }) {
         {"</>"}
       </Btn>
       <Btn title="Link" active={s.link} onClick={setLink}>🔗</Btn>
+      <Btn title="Upload image (PNG, JPEG, GIF, or WebP)" onClick={onUploadImage}>▧</Btn>
       <Divider />
 
       <Btn title="Align left" active={s.alignLeft} onClick={() => chain().setTextAlign("left").run()}>≡</Btn>
@@ -458,6 +504,8 @@ export default function DocEditor({ ydoc, provider, user, room }) {
   const [exportOpen, setExportOpen] = useState(false)
   const [commentsOpen, setCommentsOpen] = useState(false)
   const [commentCount, setCommentCount] = useState(0)
+  const [imageError, setImageError] = useState("")
+  const imageInputRef = useRef(null)
   const commentsMap = useMemo(() => ydoc.getMap("docComments"), [ydoc])
 
   const editor = useEditor(
@@ -470,6 +518,7 @@ export default function DocEditor({ ydoc, provider, user, room }) {
         }),
         Placeholder.configure({ placeholder: "Start writing…" }),
         TextAlign.configure({ types: ["heading", "paragraph"] }),
+        ImageNode,
         CommentMark,
         Collaboration.configure({ document: ydoc, field: "doc" }),
         CollaborationCaret.configure({ provider, user }),
@@ -504,6 +553,37 @@ export default function DocEditor({ ydoc, provider, user, room }) {
   })
 
   if (!editor) return null
+
+  const handleImageUpload = (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ""
+    if (!file) return
+
+    if (!ALLOWED_IMAGE_TYPES.has(file.type)) {
+      setImageError("Choose a PNG, JPEG, GIF, or WebP image.")
+      return
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setImageError("Images must be 600 KB or smaller to sync with everyone.")
+      return
+    }
+
+    setImageError("")
+    const reader = new FileReader()
+    reader.onerror = () => setImageError("Could not read this image. Please try another file.")
+    reader.onload = () => {
+      const src = safeImageSource(reader.result)
+      if (!src) {
+        setImageError("This image could not be prepared for sharing.")
+        return
+      }
+      editor.chain().focus().insertContent({
+        type: "image",
+        attrs: { src, alt: file.name.replace(/\.[^.]+$/, "").slice(0, 120) },
+      }).run()
+    }
+    reader.readAsDataURL(file)
+  }
 
   const title = () => ydoc.getText("title").toString().trim() || "Untitled document"
   const fileBase = () =>
@@ -578,7 +658,16 @@ ${editor.getHTML()}
         </div>
       </div>
 
-      <Toolbar editor={editor} />
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp"
+        className="hidden"
+        aria-label="Choose an image to upload"
+        onChange={handleImageUpload}
+      />
+      <Toolbar editor={editor} onUploadImage={() => imageInputRef.current?.click()} />
+      {imageError && <p className="doc-image-error no-print" role="alert">{imageError}</p>}
 
       {/* PAGE */}
       <div className="doc-editor-main flex flex-1 min-h-0">

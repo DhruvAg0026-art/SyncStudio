@@ -21,15 +21,17 @@ function readTokenExpiry(token) {
 }
 
 export async function getSessionToken(firebaseUser = null) {
+  let storage
   const storageKey = firebaseUser ? `${SESSION_TOKEN_KEY}:${firebaseUser.uid}` : SESSION_TOKEN_KEY
   let token = ""
   let expiresAt = 0
   try {
-    token = localStorage.getItem(storageKey) || ""
-    expiresAt = Number(localStorage.getItem(`${storageKey}:expiresAt`)) || 0
+    storage = firebaseUser ? localStorage : sessionStorage
+    token = storage.getItem(storageKey) || ""
+    expiresAt = Number(storage.getItem(`${storageKey}:expiresAt`)) || 0
     if (token && !expiresAt) {
       expiresAt = readTokenExpiry(token)
-      if (expiresAt) localStorage.setItem(`${storageKey}:expiresAt`, String(expiresAt))
+      if (expiresAt) storage.setItem(`${storageKey}:expiresAt`, String(expiresAt))
     }
   } catch {
     // Request a fresh session if browser storage is unavailable.
@@ -50,8 +52,8 @@ export async function getSessionToken(firebaseUser = null) {
   const data = await response.json()
   if (typeof data.token !== "string") throw new Error("The server returned an invalid room session.")
   try {
-    localStorage.setItem(storageKey, data.token)
-    localStorage.setItem(`${storageKey}:expiresAt`, String(data.expiresAt || Date.now() + 29 * 24 * 60 * 60 * 1000))
+    storage.setItem(storageKey, data.token)
+    storage.setItem(`${storageKey}:expiresAt`, String(data.expiresAt || Date.now() + 29 * 24 * 60 * 60 * 1000))
   } catch {
     // The session remains usable until this page is closed.
   }

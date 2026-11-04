@@ -12,6 +12,7 @@ Live app: https://sync-studio-sooty.vercel.app/
 - Real-time collaborative editing (Doc and Code modes share one connection per room)
 - Rich-text toolbar: headings, bold/italic/underline/strike, links, lists, quotes, code blocks, alignment, undo/redo
 - Doc mode comments anchored to selected text, with shared replies and resolve/reopen
+- Doc mode image uploads (PNG, JPEG, GIF, or WebP; up to 600 KB per image) sync through Yjs
 - Live colored cursors with user names
 - Rooms via URL (`?room=my-room&mode=doc`) and a "Copy invite link" button
 - Per-user dark/light theme, editable profile, recent rooms, and unique room-name generation

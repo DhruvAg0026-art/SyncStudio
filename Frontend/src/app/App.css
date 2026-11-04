@@ -549,6 +549,23 @@ body,
   margin: 1.5em 0;
 }
 
+.doc-content .doc-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1em auto;
+  border-radius: 6px;
+  object-fit: contain;
+}
+
+.doc-image-error {
+  margin: 0;
+  padding: 6px 12px;
+  color: #b91c1c;
+  background: #fee2e2;
+  font-size: 12px;
+}
+
 .doc-comment-mark {
   border-bottom: 2px solid #f59e0b;
   background: #fbbf2438;
