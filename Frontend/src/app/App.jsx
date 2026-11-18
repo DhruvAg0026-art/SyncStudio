@@ -1,4 +1,4 @@
-﻿import "./App.css"
+import "./App.css"
 import { lazy, Suspense, useEffect, useState } from "react"
 import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth"
 import { colorFor, getSessionToken, useCollab } from "./useCollab"
@@ -111,7 +111,7 @@ function ThemeToggle({ theme, onToggle }) {
 
 const STATUS = {
   connected: { label: "Connected", dot: "bg-green-400" },
-  connecting: { label: "Connectingâ€¦", dot: "bg-amber-400" },
+  connecting: { label: "Connecting…", dot: "bg-amber-400" },
   disconnected: { label: "Offline", dot: "bg-red-400" },
 }
 
@@ -558,7 +558,7 @@ function App() {
   if (!authReady) {
     return (
       <main className="app-login h-screen w-full flex items-center justify-center">
-        <p className="join-subtitle">Checking your accountâ€¦</p>
+        <p className="join-subtitle">Checking your account…</p>
       </main>
     )
   }
@@ -601,11 +601,11 @@ function App() {
                   onClick={() => setDocumentsRefresh((current) => current + 1)}
                   disabled={documentsLoading}
                 >
-                  {documentsLoading ? "Refreshingâ€¦" : "Refresh"}
+                  {documentsLoading ? "Refreshing…" : "Refresh"}
                 </button>
               </div>
               {documentsError && <p className="auth-error" role="alert">{documentsError}</p>}
-              {!documentsError && documentsLoading && <p className="join-subtitle">Loading documentsâ€¦</p>}
+              {!documentsError && documentsLoading && <p className="join-subtitle">Loading documents…</p>}
               {!documentsError && !documentsLoading && documents.length === 0 && (
                 <p className="join-subtitle">Rooms you create while signed in will appear here.</p>
               )}
@@ -706,7 +706,7 @@ function App() {
                 onClick={handleCreateRoom}
                 disabled={roomCreating}
               >
-                {roomCreating ? "Creatingâ€¦" : "Create room with this name"}
+                {roomCreating ? "Creating…" : "Create room with this name"}
               </button>
               <button
                 type="button"
@@ -739,7 +739,7 @@ function App() {
                       onClick={() => removeRecentRoom(recent.room)}
                       aria-label={`Remove ${recent.room} from recent rooms`}
                     >
-                      Ã—
+                      ×
                     </button>
                   </li>
                 ))}
@@ -758,7 +758,7 @@ function App() {
   const statusInfo = STATUS[status] || STATUS.connecting
 
   const loading = (
-    <div className="h-full flex items-center justify-center text-gray-400">Loadingâ€¦</div>
+    <div className="h-full flex items-center justify-center text-gray-400">Loading…</div>
   )
 
   const tab = (value, label) => (
@@ -791,7 +791,7 @@ function App() {
           {statusInfo.label}
         </span>
         <span className="room-access-badge">
-          {accessRole === null ? "Checking accessâ€¦" : accessRole === "view" ? "View-only access" : "Edit access"}
+          {accessRole === null ? "Checking access…" : accessRole === "view" ? "View-only access" : "Edit access"}
         </span>
 
         <span className="text-sm text-gray-400 md:hidden">{users.length} online</span>
@@ -819,10 +819,10 @@ function App() {
                 <div className="share-popover">
                   <p>Creating either link requires a valid invite for future room joins. Links expire in 30 days.</p>
                   <button type="button" onClick={() => handleCopyLink("edit")} disabled={Boolean(shareBusy)}>
-                    {shareBusy === "edit" ? "Creatingâ€¦" : "Copy edit link"}
+                    {shareBusy === "edit" ? "Creating…" : "Copy edit link"}
                   </button>
                   <button type="button" onClick={() => handleCopyLink("view")} disabled={Boolean(shareBusy)}>
-                    {shareBusy === "view" ? "Creatingâ€¦" : "Copy view-only link"}
+                    {shareBusy === "view" ? "Creating…" : "Copy view-only link"}
                   </button>
                   {shareError && <p className="share-error" role="alert">{shareError}</p>}
                 </div>
