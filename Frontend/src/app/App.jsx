@@ -442,6 +442,7 @@ function App() {
     setRoomCreateError("")
     setInviteToken("")
     setRoomAccessToken("")
+    setRoomCreating(true)
 
     try {
       const sessionToken = await getSessionToken(authUser)
@@ -480,7 +481,14 @@ function App() {
     } catch (error) {
       setRoomCreateError(error.message || "Could not create this room.")
       setUsername("")
+    } finally {
+      setRoomCreating(false)
     }
+  }
+
+  const handleCreateRoom = (event) => {
+    event.preventDefault()
+    createRoom()
   }
 
   const handleGenerateRoom = (event) => {
@@ -1005,4 +1013,3 @@ function App() {
 }
 
 export default App
-
