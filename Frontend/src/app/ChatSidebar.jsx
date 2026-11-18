@@ -23,14 +23,21 @@ export default function ChatSidebar({ ydoc, user, clientId, open, onToggle, read
   const [unread, setUnread] = useState(0)
   const containerRef = useRef(null)
   const stickToBottomRef = useRef(true)
-  const seenIdsRef = useRef(new Set())
+  const openRef = useRef(open)
+  const clientIdRef = useRef(clientId)
+  const readOnlyRef = useRef(readOnly)
+  openRef.current = open
+  clientIdRef.current = clientId
+  readOnlyRef.current = readOnly
 
   useEffect(() => {
     if (!ydoc) return
     const chat = ydoc.getArray("chat")
+    let initialized = false
+    let seenIds = new Set()
 
     const updateMessages = () => {
-      if (!readOnly && chat.length > 200) {
+      if (!readOnlyRef.current && chat.length > 200) {
         ydoc.transact(() => chat.delete(0, chat.length - 200))
       }
 
@@ -41,18 +48,25 @@ export default function ChatSidebar({ ydoc, user, clientId, open, onToggle, read
         && typeof message.author === "string"
         && Number.isFinite(message.createdAt)
       )
-      const newMessages = nextMessages.filter((message) => !seenIdsRef.current.has(message.id))
-      if (!open && newMessages.some((message) => message.clientId !== clientId)) {
-        setUnread((count) => count + newMessages.filter((message) => message.clientId !== clientId).length)
+      if (!initialized) {
+        initialized = true
+        seenIds = new Set(nextMessages.map((message) => message.id))
+        setMessages(nextMessages)
+        return
       }
-      seenIdsRef.current = new Set(nextMessages.map((message) => message.id))
+      const newMessages = nextMessages.filter((message) => !seenIds.has(message.id))
+      const unseenIncoming = newMessages.filter((message) => message.clientId !== clientIdRef.current)
+      if (!openRef.current && unseenIncoming.length) {
+        setUnread((count) => count + unseenIncoming.length)
+      }
+      seenIds = new Set(nextMessages.map((message) => message.id))
       setMessages(nextMessages)
     }
 
     chat.observe(updateMessages)
     updateMessages()
     return () => chat.unobserve(updateMessages)
-  }, [ydoc, clientId, open, readOnly])
+  }, [ydoc])
 
   useEffect(() => {
     if (open && stickToBottomRef.current && containerRef.current) {

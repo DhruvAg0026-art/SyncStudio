@@ -1,9 +1,11 @@
 import "./App.css"
-import { lazy, Suspense, useEffect, useState } from "react"
+import { lazy, Suspense, useEffect, useRef, useState } from "react"
 import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth"
 import { colorFor, getSessionToken, useCollab } from "./useCollab"
 import ChatSidebar from "./ChatSidebar"
 import { auth, firebaseConfigured, googleProvider } from "./firebase"
+import ConfirmDialog from "./ConfirmDialog"
+import useDismissable from "./useDismissable"
 
 // Loaded on demand so the Monaco bundle is only fetched when Code mode is used
 const CodeEditor = lazy(() => import("./CodeEditor"))
@@ -140,6 +142,7 @@ function App() {
   const [joinPassword, setJoinPassword] = useState("")
   const [roomAccessToken, setRoomAccessToken] = useState("")
   const [shareOpen, setShareOpen] = useState(false)
+  const [shareFallbackLink, setShareFallbackLink] = useState("")
   const [shareBusy, setShareBusy] = useState("")
   const [shareError, setShareError] = useState("")
   const [authUser, setAuthUser] = useState(null)
@@ -149,6 +152,11 @@ function App() {
   const [documentsLoading, setDocumentsLoading] = useState(false)
   const [documentsError, setDocumentsError] = useState("")
   const [documentsRefresh, setDocumentsRefresh] = useState(0)
+  const [membersOpen, setMembersOpen] = useState(false)
+  const [confirmation, setConfirmation] = useState(null)
+  const shareMenuRef = useRef(null)
+  const profileMenuRef = useRef(null)
+  const shareFallbackInputRef = useRef(null)
 
   const {
     session,
@@ -165,6 +173,18 @@ function App() {
 
   const selfSocketId = session?.provider.socket.id
   const isOwner = members.some((member) => member.socketId === selfSocketId && member.userId === ownerId)
+  const autoSaveLeader = members
+    .filter((member) => member.userId === ownerId)
+    .slice()
+    .sort((a, b) => a.joinedAt - b.joinedAt || a.socketId.localeCompare(b.socketId))[0]
+  const autoSaveEnabled = Boolean(selfSocketId && autoSaveLeader?.socketId === selfSocketId)
+
+  useDismissable(shareMenuRef, shareOpen, () => setShareOpen(false))
+  useDismissable(profileMenuRef, profileOpen, () => setProfileOpen(false))
+
+  useEffect(() => {
+    setMembersOpen(false)
+  }, [room])
 
   useEffect(() => {
     if (!auth) {
@@ -391,12 +411,16 @@ function App() {
   const openRecentRoom = (recent) => {
     setJoinRoom(recent.room)
     setMode(recent.mode)
+    setRoomCreateError("")
     setInviteToken("")
     setJoinPrivateRoom(false)
     setJoinPassword("")
     setRoomAccessToken("")
     const name = joinName.trim()
-    if (!name) return
+    if (!name) {
+      setRoomCreateError("Enter a display name before opening a recent room.")
+      return
+    }
     try {
       sessionStorage.setItem(USERNAME_KEY, name)
       localStorage.setItem(PROFILE_KEY, JSON.stringify({ name, color: profileColor }))
@@ -536,13 +560,17 @@ function App() {
       const params = new URLSearchParams({ room, mode })
       if (linkInvite) params.set("invite", linkInvite)
       const link = `${window.location.origin}${window.location.pathname}?${params.toString()}`
+      let copiedToClipboard = false
       try {
         await navigator.clipboard.writeText(link)
+        copiedToClipboard = true
       } catch {
-        window.prompt("Copy this link", link)
+        setShareFallbackLink(link)
       }
-      setCopied(access || "link")
-      setTimeout(() => setCopied(""), 1500)
+      if (copiedToClipboard) {
+        setCopied(access || "link")
+        setTimeout(() => setCopied(""), 1500)
+      }
       setShareOpen(false)
     } catch (error) {
       setShareError(error.message || "Could not create an invite link.")
@@ -633,7 +661,10 @@ function App() {
               type="text"
               name="username"
               value={joinName}
-              onChange={(event) => setJoinName(event.target.value)}
+              onChange={(event) => {
+                setJoinName(event.target.value)
+                setRoomCreateError("")
+              }}
               placeholder="Enter your username"
               autoComplete="off"
               maxLength={24}
@@ -801,9 +832,17 @@ function App() {
             {tab("doc", "Doc")}
             {tab("code", "Code")}
           </div>
+          <button
+            type="button"
+            className="mobile-members-toggle md:hidden"
+            aria-expanded={membersOpen}
+            onClick={() => setMembersOpen((open) => !open)}
+          >
+            Members ({members.length || users.length})
+          </button>
 
           {isOwner ? (
-            <div className="share-menu">
+            <div className="share-menu" ref={shareMenuRef}>
               <button
                 type="button"
                 onClick={() => {
@@ -849,7 +888,7 @@ function App() {
               readOnly={accessRole === "view"}
             />
           )}
-          <div className="profile-menu">
+          <div className="profile-menu" ref={profileMenuRef}>
             <button
               type="button"
               className="profile-trigger"
@@ -905,10 +944,15 @@ function App() {
             type="button"
             className="profile-trigger"
             onClick={() => {
-              if (window.confirm("Leave this room?")) {
-                leaveRoom()
-                setUsername("")
-              }
+              setConfirmation({
+                title: "Leave this room?",
+                message: "You can rejoin later using the room link.",
+                confirmLabel: "Leave room",
+                onConfirm: () => {
+                  leaveRoom()
+                  setUsername("")
+                },
+              })
             }}
           >
             Leave room
@@ -918,9 +962,13 @@ function App() {
               type="button"
               className="delete-room-button"
               onClick={() => {
-                if (window.confirm(`Permanently delete room "${room}" and its saved document?`)) {
-                  deleteRoom()
-                }
+                setConfirmation({
+                  title: "Delete this room?",
+                  message: `Permanently delete room "${room}" and its saved document?`,
+                  confirmLabel: "Delete room",
+                  danger: true,
+                  onConfirm: deleteRoom,
+                })
               }}
             >
               Delete room
@@ -942,10 +990,22 @@ function App() {
 
         {/* USERS */}
 
-        <aside className="app-users no-print hidden md:block h-full w-56 shrink-0 rounded-lg overflow-auto">
+        <aside
+          className={`app-users no-print h-full w-56 shrink-0 rounded-lg overflow-auto ${
+            membersOpen ? "mobile-members-open" : "hidden md:block"
+          }`}
+          aria-label="Room members"
+        >
           <h2 className="text-xl font-bold p-4 border-b border-gray-300">
             Members ({members.length || users.length})
           </h2>
+          <button
+            type="button"
+            className="mobile-members-close md:hidden"
+            onClick={() => setMembersOpen(false)}
+          >
+            Close
+          </button>
 
           <ul className="p-4">
             {(members.length ? members : users).map((user) => (
@@ -967,7 +1027,13 @@ function App() {
                     className="kick-member-button"
                     aria-label={`Remove ${user.name} from room`}
                     onClick={() => {
-                      if (window.confirm(`Remove ${user.name} from this room?`)) kickMember(user.socketId)
+                      setConfirmation({
+                        title: `Remove ${user.name}?`,
+                        message: `${user.name} will be disconnected from this room.`,
+                        confirmLabel: "Remove",
+                        danger: true,
+                        onConfirm: () => kickMember(user.socketId),
+                      })
                     }}
                   >
                     Kick
@@ -990,8 +1056,10 @@ function App() {
                   key={`code-${room}`}
                   ydoc={session.ydoc}
                   provider={session.provider}
+                  user={session.user}
                   theme={theme}
                   readOnly={accessRole === "view"}
+                  autoSaveEnabled={autoSaveEnabled}
                 />
               ) : (
                 <DocEditor
@@ -1001,6 +1069,7 @@ function App() {
                   user={session.user}
                   room={room}
                   readOnly={accessRole === "view"}
+                  autoSaveEnabled={autoSaveEnabled}
                 />
               )}
             </Suspense>
@@ -1008,6 +1077,54 @@ function App() {
         </section>
 
       </div>
+      {confirmation && (
+        <ConfirmDialog
+          title={confirmation.title}
+          message={confirmation.message}
+          confirmLabel={confirmation.confirmLabel}
+          danger={confirmation.danger}
+          onCancel={() => setConfirmation(null)}
+          onConfirm={() => {
+            confirmation.onConfirm()
+            setConfirmation(null)
+          }}
+        />
+      )}
+      {shareFallbackLink && (
+        <div
+          className="dialog-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShareFallbackLink("")
+          }}
+        >
+          <section
+            className="confirm-dialog share-link-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="share-link-dialog-title"
+          >
+            <h2 id="share-link-dialog-title">Copy invite link</h2>
+            <p>Clipboard access is unavailable. Select and copy the link below.</p>
+            <input
+              ref={shareFallbackInputRef}
+              type="text"
+              readOnly
+              value={shareFallbackLink}
+              onFocus={(event) => event.target.select()}
+              aria-label="Invite link"
+            />
+            <div className="confirm-dialog-actions">
+              <button type="button" onClick={() => setShareFallbackLink("")}>Close</button>
+              <button
+                type="button"
+                onClick={() => shareFallbackInputRef.current?.select()}
+              >
+                Select link
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   )
 }

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import * as Y from "yjs"
+import ConfirmDialog from "./ConfirmDialog"
 
 const VERSION_LIMIT = 30
 const MAX_SNAPSHOT_BYTES = 100 * 1024
@@ -57,13 +58,21 @@ function createSnapshot(ydoc, mode, content) {
   }
 }
 
-export default function VersionHistory({ ydoc, mode, user, editor, readOnly = false }) {
+export default function VersionHistory({
+  ydoc,
+  mode,
+  user,
+  editor,
+  readOnly = false,
+  autoSaveEnabled = false,
+}) {
   const [open, setOpen] = useState(false)
   const [versions, setVersions] = useState([])
   const [selectedVersion, setSelectedVersion] = useState(null)
   const [error, setError] = useState("")
+  const [restoreVersion, setRestoreVersion] = useState(null)
 
-  const saveSnapshot = useCallback(() => {
+  const saveSnapshot = useCallback((automatic = false) => {
     if (readOnly) return
     try {
       const value = mode === "code" ? ydoc.getText("monaco").toString() : editor?.getJSON()
@@ -83,12 +92,17 @@ export default function VersionHistory({ ydoc, mode, user, editor, readOnly = fa
         }
       })
       setError("")
-      setSelectedVersion(version)
-      setOpen(true)
+      if (!automatic) {
+        setSelectedVersion(version)
+        setOpen(true)
+      }
     } catch (snapshotError) {
       setError(snapshotError.message || "Could not save this version.")
     }
   }, [ydoc, mode, user, editor, readOnly])
+
+  const saveSnapshotRef = useRef(saveSnapshot)
+  saveSnapshotRef.current = saveSnapshot
 
   useEffect(() => {
     const sharedVersions = ydoc.getArray("versions")
@@ -103,16 +117,20 @@ export default function VersionHistory({ ydoc, mode, user, editor, readOnly = fa
   }, [ydoc])
 
   useEffect(() => {
-    if (readOnly) return undefined
+    if (readOnly || !autoSaveEnabled) return undefined
     let timer
-    const scheduleSnapshot = () => {
-      clearTimeout(timer)
-      timer = setTimeout(() => {
-        saveSnapshot()
-      }, 10 * 60 * 1000)
+    let dirty = false
+    const captureAfterActiveInterval = () => {
+      timer = null
+      if (!dirty) return
+      dirty = false
+      saveSnapshotRef.current(true)
+    }
+    const onDocUpdate = () => {
+      dirty = true
+      if (!timer) timer = setTimeout(captureAfterActiveInterval, 10 * 60 * 1000)
     }
     const text = mode === "code" ? ydoc.getText("monaco") : null
-    const onDocUpdate = () => scheduleSnapshot()
 
     if (text) text.observe(onDocUpdate)
     else if (editor) editor.on("update", onDocUpdate)
@@ -122,10 +140,9 @@ export default function VersionHistory({ ydoc, mode, user, editor, readOnly = fa
       if (text) text.unobserve(onDocUpdate)
       else if (editor) editor.off("update", onDocUpdate)
     }
-  }, [ydoc, mode, editor, saveSnapshot, readOnly])
+  }, [ydoc, mode, editor, readOnly, autoSaveEnabled])
 
   const restore = (version) => {
-    if (!window.confirm("Restore this version for everyone in the room?")) return
     if (version.mode !== mode) {
       setError("This version belongs to a different editor mode.")
       return
@@ -140,6 +157,7 @@ export default function VersionHistory({ ydoc, mode, user, editor, readOnly = fa
       editor.commands.setContent(version.content)
     }
     setError("")
+    setRestoreVersion(null)
   }
 
   const preview = (version) => {
@@ -186,11 +204,22 @@ export default function VersionHistory({ ydoc, mode, user, editor, readOnly = fa
             <div className="version-preview">
               <pre>{preview(selectedVersion).slice(0, 5000)}</pre>
               {!readOnly && (
-                <button type="button" onClick={() => restore(selectedVersion)}>Restore version</button>
+                <button type="button" onClick={() => setRestoreVersion(selectedVersion)}>
+                  Restore version
+                </button>
               )}
             </div>
           )}
         </aside>
+      )}
+      {restoreVersion && (
+        <ConfirmDialog
+          title="Restore version?"
+          message="This replaces the current content for everyone in the room."
+          confirmLabel="Restore"
+          onCancel={() => setRestoreVersion(null)}
+          onConfirm={() => restore(restoreVersion)}
+        />
       )}
     </div>
   )

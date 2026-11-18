@@ -36,14 +36,33 @@ const RUNNABLE_LANGUAGES = new Set([
   "php", "ruby", "swift", "kotlin", "dart", "lua",
 ])
 
-export default function CodeEditor({ ydoc, provider, theme = "dark", readOnly = false }) {
+export default function CodeEditor({
+  ydoc,
+  provider,
+  user,
+  theme = "dark",
+  readOnly = false,
+  autoSaveEnabled = false,
+}) {
   const [editor, setEditor] = useState(null)
+  const [localUser, setLocalUser] = useState(
+    () => provider.awareness.getLocalState()?.user || user || null
+  )
   const [language, setLanguage] = useState("javascript")
   const [outputOpen, setOutputOpen] = useState(false)
   const [stdin, setStdin] = useState("")
   const [running, setRunning] = useState(false)
   const [runError, setRunError] = useState("")
   const [runResult, setRunResult] = useState(null)
+
+  useEffect(() => {
+    const updateUser = () => {
+      setLocalUser(provider.awareness.getLocalState()?.user || user || null)
+    }
+    provider.awareness.on("change", updateUser)
+    updateUser()
+    return () => provider.awareness.off("change", updateUser)
+  }, [provider, user])
 
   useEffect(() => {
     const settings = ydoc.getMap("settings")
@@ -145,8 +164,9 @@ export default function CodeEditor({ ydoc, provider, theme = "dark", readOnly = 
         <VersionHistory
           ydoc={ydoc}
           mode="code"
-          user={provider.awareness.getLocalState()?.user}
+          user={localUser}
           readOnly={readOnly}
+          autoSaveEnabled={autoSaveEnabled}
         />
         <span className="code-language-hint">Syntax highlighting for 26 languages</span>
       </div>
