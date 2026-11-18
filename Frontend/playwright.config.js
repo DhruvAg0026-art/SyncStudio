@@ -22,8 +22,8 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "npm start",
-      cwd: resolve("../Backend"),
+      command: "node e2e/backend-server.js",
+      cwd: resolve("."),
       url: `${backendUrl}/health`,
       reuseExistingServer: false,
       timeout: 60_000,
@@ -46,5 +46,4 @@ export default defineConfig({
       },
     },
   ],
-  globalTeardown: "./playwright.global-teardown.js",
 })
