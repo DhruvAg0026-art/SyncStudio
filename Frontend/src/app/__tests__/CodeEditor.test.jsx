@@ -24,6 +24,8 @@ describe("Code mode toolbar", () => {
   const provider = {
     awareness: {
       getLocalState: () => ({ user: { name: "Ava" } }),
+      on: () => {},
+      off: () => {},
     },
   }
 

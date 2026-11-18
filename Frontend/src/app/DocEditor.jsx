@@ -9,6 +9,7 @@ import Placeholder from "@tiptap/extension-placeholder"
 import TurndownService from "turndown"
 import * as Y from "yjs"
 import VersionHistory from "./VersionHistory"
+import useDismissable from "./useDismissable"
 
 const MAX_IMAGE_BYTES = 600 * 1024
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"])
@@ -162,7 +163,7 @@ function Divider() {
   return <span className="w-px h-5 bg-gray-700 mx-1" />
 }
 
-function Toolbar({ editor, onUploadImage }) {
+function Toolbar({ editor, onUploadImage, onRequestLink }) {
   const s = useEditorState({
     editor,
     selector: ({ editor }) => ({
@@ -188,13 +189,7 @@ function Toolbar({ editor, onUploadImage }) {
 
   const setLink = () => {
     const previous = editor.getAttributes("link").href || ""
-    const url = window.prompt("Link URL", previous)
-    if (url === null) return
-    if (url.trim() === "") {
-      chain().extendMarkRange("link").unsetLink().run()
-    } else {
-      chain().extendMarkRange("link").setLink({ href: url.trim() }).run()
-    }
+    onRequestLink(previous)
   }
 
   const setHeading = (e) => {
@@ -511,7 +506,12 @@ export default function DocEditor({ ydoc, provider, user, room, readOnly = false
   const [commentsOpen, setCommentsOpen] = useState(false)
   const [commentCount, setCommentCount] = useState(0)
   const [imageError, setImageError] = useState("")
+  const [linkDraft, setLinkDraft] = useState(null)
   const imageInputRef = useRef(null)
+  const exportMenuRef = useRef(null)
+  const linkDialogRef = useRef(null)
+  useDismissable(exportMenuRef, exportOpen, () => setExportOpen(false))
+  useDismissable(linkDialogRef, linkDraft !== null, () => setLinkDraft(null))
   const commentsMap = useMemo(() => ydoc.getMap("docComments"), [ydoc])
 
   const editor = useEditor(
@@ -648,7 +648,7 @@ ${editor.getHTML()}
           Comments <span>{commentCount}</span>
         </button>
 
-        <div className="relative">
+        <div className="relative" ref={exportMenuRef}>
           <button
             type="button"
             onClick={() => setExportOpen((open) => !open)}
@@ -678,7 +678,11 @@ ${editor.getHTML()}
             aria-label="Choose an image to upload"
             onChange={handleImageUpload}
           />
-          <Toolbar editor={editor} onUploadImage={() => imageInputRef.current?.click()} />
+          <Toolbar
+            editor={editor}
+            onUploadImage={() => imageInputRef.current?.click()}
+            onRequestLink={setLinkDraft}
+          />
           {imageError && <p className="doc-image-error no-print" role="alert">{imageError}</p>}
         </>
       )}
@@ -705,6 +709,41 @@ ${editor.getHTML()}
         <span>{stats.words} words</span>
         <span>{stats.chars} characters</span>
       </div>
+
+      {linkDraft !== null && (
+        <div className="dialog-backdrop no-print">
+          <form
+            ref={linkDialogRef}
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Insert link"
+            onSubmit={(event) => {
+              event.preventDefault()
+              const url = linkDraft.trim()
+              const chain = editor.chain().focus().extendMarkRange("link")
+              if (url) chain.setLink({ href: url }).run()
+              else chain.unsetLink().run()
+              setLinkDraft(null)
+            }}
+          >
+            <h2>Insert link</h2>
+            <label>
+              Link URL (leave empty to remove the link)
+              <input
+                value={linkDraft}
+                onChange={(event) => setLinkDraft(event.target.value)}
+                autoComplete="off"
+                autoFocus
+              />
+            </label>
+            <div className="confirm-dialog-actions">
+              <button type="button" onClick={() => setLinkDraft(null)}>Cancel</button>
+              <button type="submit">Apply</button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   )
 }
