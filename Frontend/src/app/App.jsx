@@ -174,7 +174,7 @@ function App() {
   const selfSocketId = session?.provider.socket.id
   const isOwner = members.some((member) => member.socketId === selfSocketId && member.userId === ownerId)
   const autoSaveLeader = members
-    .filter((member) => member.userId === ownerId)
+    .filter((member) => member.access !== "view")
     .slice()
     .sort((a, b) => a.joinedAt - b.joinedAt || a.socketId.localeCompare(b.socketId))[0]
   const autoSaveEnabled = Boolean(selfSocketId && autoSaveLeader?.socketId === selfSocketId)
