@@ -1,4 +1,4 @@
-import "./App.css"
+﻿import "./App.css"
 import { lazy, Suspense, useEffect, useState } from "react"
 import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth"
 import { colorFor, getSessionToken, useCollab } from "./useCollab"
@@ -111,7 +111,7 @@ function ThemeToggle({ theme, onToggle }) {
 
 const STATUS = {
   connected: { label: "Connected", dot: "bg-green-400" },
-  connecting: { label: "Connecting…", dot: "bg-amber-400" },
+  connecting: { label: "Connectingâ€¦", dot: "bg-amber-400" },
   disconnected: { label: "Offline", dot: "bg-red-400" },
 }
 
@@ -134,6 +134,11 @@ function App() {
   const [chatOpen, setChatOpen] = useState(false)
   const [roomCreateError, setRoomCreateError] = useState("")
   const [roomCreating, setRoomCreating] = useState(false)
+  const [privateRoom, setPrivateRoom] = useState(false)
+  const [roomPassword, setRoomPassword] = useState("")
+  const [joinPrivateRoom, setJoinPrivateRoom] = useState(false)
+  const [joinPassword, setJoinPassword] = useState("")
+  const [roomAccessToken, setRoomAccessToken] = useState("")
   const [shareOpen, setShareOpen] = useState(false)
   const [shareBusy, setShareBusy] = useState("")
   const [shareError, setShareError] = useState("")
@@ -156,7 +161,7 @@ function App() {
     leaveRoom,
     kickMember,
     deleteRoom,
-  } = useCollab(room, authReady ? username : "", profileColor, authUser, inviteToken)
+  } = useCollab(room, authReady ? username : "", profileColor, authUser, inviteToken, roomAccessToken)
 
   const selfSocketId = session?.provider.socket.id
   const isOwner = members.some((member) => member.socketId === selfSocketId && member.userId === ownerId)
@@ -290,28 +295,73 @@ function App() {
     }
   }
 
-  const handleJoin = (e) => {
-    e.preventDefault()
+  const handleJoin = async (event) => {
+    event.preventDefault()
 
-    const name = joinName.trim()
-    const roomName = cleanRoom(joinRoom) || DEFAULT_ROOM
-
-    if (!name) {
-      alert("Please enter a username")
+    const trimmedName = joinName.trim()
+    if (!trimmedName) {
+      setRoomCreateError("Enter a display name before joining a room.")
       return
     }
 
-    try {
-      sessionStorage.setItem(USERNAME_KEY, name)
-      localStorage.setItem(PROFILE_KEY, JSON.stringify({ name, color: profileColor }))
-    } catch {
-      // The user can still join without persistent browser storage.
+    const roomName = cleanRoom(joinRoom)
+    if (!roomName) {
+      setRoomCreateError("Choose a room to join.")
+      return
     }
 
-    setJoinName(name)
-    setRoom(roomName)
-    if (roomName !== room) setInviteToken("")
-    setUsername(name)
+    setRoomCreateError("")
+    setInviteToken("")
+    setRoomAccessToken("")
+
+    try {
+      sessionStorage.setItem(USERNAME_KEY, trimmedName)
+      localStorage.setItem(PROFILE_KEY, JSON.stringify({ name: trimmedName, color: profileColor }))
+    } catch {
+      // The profile stays usable in memory even if storage is unavailable.
+    }
+
+    try {
+      if (joinPrivateRoom) {
+        const password = joinPassword.trim()
+        if (password.length < 6) {
+          setRoomCreateError("Private rooms require a password of at least 6 characters.")
+          return
+        }
+
+        const sessionToken = await getSessionToken(authUser)
+        const response = await fetch(
+          `${import.meta.env.VITE_CONNECT.replace(/\/+$/, "")}/api/rooms/${encodeURIComponent(roomName)}/access`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${sessionToken}`,
+            },
+            body: JSON.stringify({ password }),
+          }
+        )
+        const result = await response.json()
+        if (!response.ok) throw new Error(result.error || "Could not verify this room password.")
+
+        setRoomAccessToken(result.roomAccessToken || "")
+        setJoinName(trimmedName)
+        setRoom(roomName)
+        setJoinRoom(roomName)
+        setJoinPrivateRoom(false)
+        setJoinPassword("")
+        setUsername(trimmedName)
+        return
+      }
+
+      setJoinName(trimmedName)
+      setRoom(roomName)
+      setJoinRoom(roomName)
+      setUsername(trimmedName)
+    } catch (error) {
+      setRoomCreateError(error.message || "Could not join this room.")
+      setUsername("")
+    }
   }
 
   const saveProfile = (event) => {
@@ -342,6 +392,9 @@ function App() {
     setJoinRoom(recent.room)
     setMode(recent.mode)
     setInviteToken("")
+    setJoinPrivateRoom(false)
+    setJoinPassword("")
+    setRoomAccessToken("")
     const name = joinName.trim()
     if (!name) return
     try {
@@ -373,21 +426,23 @@ function App() {
     }
   }
 
-  const createRoom = async (requestedRoom) => {
-    const name = joinName.trim()
-    if (!name) {
-      setRoomCreateError("Please enter a username before creating a room.")
+  const createRoom = async (requestedRoom = "") => {
+    const trimmedName = joinName.trim()
+    if (!trimmedName) {
+      setRoomCreateError("Enter a display name before creating a room.")
       return
     }
 
-    const roomName = requestedRoom === undefined ? "" : cleanRoom(requestedRoom)
-    if (requestedRoom !== undefined && !roomName) {
-      setRoomCreateError("Enter a valid room name before creating the room.")
+    const nextRoom = cleanRoom(requestedRoom || joinRoom)
+    if (privateRoom && roomPassword.trim().length < 6) {
+      setRoomCreateError("Private rooms require a password of at least 6 characters.")
       return
     }
 
     setRoomCreateError("")
-    setRoomCreating(true)
+    setInviteToken("")
+    setRoomAccessToken("")
+
     try {
       const sessionToken = await getSessionToken(authUser)
       const response = await fetch(`${import.meta.env.VITE_CONNECT.replace(/\/+$/, "")}/api/rooms`, {
@@ -396,33 +451,36 @@ function App() {
           "content-type": "application/json",
           authorization: `Bearer ${sessionToken}`,
         },
-        body: JSON.stringify(roomName ? { room: roomName } : {}),
+        body: JSON.stringify({
+          room: nextRoom || undefined,
+          privateRoom,
+          password: roomPassword.trim(),
+        }),
       })
       const result = await response.json()
-      if (!response.ok) throw new Error(result.error || "Could not create the room.")
+      if (!response.ok) throw new Error(result.error || "Could not create this room.")
 
-      setJoinRoom(result.room)
-      setMode("doc")
+      const createdRoom = result.room || nextRoom || ""
+      if (!createdRoom) throw new Error("The server did not return a room name.")
+
+      setJoinName(trimmedName)
+      setJoinRoom(createdRoom)
+      setRoom(createdRoom)
+      setUsername(trimmedName)
+      setPrivateRoom(false)
+      setRoomPassword("")
+      setJoinPrivateRoom(false)
+      setJoinPassword("")
       try {
-        sessionStorage.setItem(USERNAME_KEY, name)
-        localStorage.setItem(PROFILE_KEY, JSON.stringify({ name, color: profileColor }))
+        sessionStorage.setItem(USERNAME_KEY, trimmedName)
+        localStorage.setItem(PROFILE_KEY, JSON.stringify({ name: trimmedName, color: profileColor }))
       } catch {
-        // The room can still be opened without persistent browser storage.
+        // The profile stays usable in memory even if storage is unavailable.
       }
-      setJoinName(name)
-      setInviteToken("")
-      setRoom(result.room)
-      setUsername(name)
     } catch (error) {
-      setRoomCreateError(error.message)
-    } finally {
-      setRoomCreating(false)
+      setRoomCreateError(error.message || "Could not create this room.")
+      setUsername("")
     }
-  }
-
-  const handleCreateRoom = (event) => {
-    event.preventDefault()
-    createRoom(cleanRoom(joinRoom))
   }
 
   const handleGenerateRoom = (event) => {
@@ -492,7 +550,7 @@ function App() {
   if (!authReady) {
     return (
       <main className="app-login h-screen w-full flex items-center justify-center">
-        <p className="join-subtitle">Checking your account…</p>
+        <p className="join-subtitle">Checking your accountâ€¦</p>
       </main>
     )
   }
@@ -535,11 +593,11 @@ function App() {
                   onClick={() => setDocumentsRefresh((current) => current + 1)}
                   disabled={documentsLoading}
                 >
-                  {documentsLoading ? "Refreshing…" : "Refresh"}
+                  {documentsLoading ? "Refreshingâ€¦" : "Refresh"}
                 </button>
               </div>
               {documentsError && <p className="auth-error" role="alert">{documentsError}</p>}
-              {!documentsError && documentsLoading && <p className="join-subtitle">Loading documents…</p>}
+              {!documentsError && documentsLoading && <p className="join-subtitle">Loading documentsâ€¦</p>}
               {!documentsError && !documentsLoading && documents.length === 0 && (
                 <p className="join-subtitle">Rooms you create while signed in will appear here.</p>
               )}
@@ -576,6 +634,29 @@ function App() {
               className="join-input"
             />
 
+            <div className="flex items-center gap-2 text-sm text-gray-300">
+              <input
+                id="private-room-toggle"
+                type="checkbox"
+                checked={joinPrivateRoom}
+                onChange={(event) => setJoinPrivateRoom(event.target.checked)}
+              />
+              <label htmlFor="private-room-toggle">Join private room</label>
+            </div>
+
+            {joinPrivateRoom && (
+              <input
+                type="password"
+                name="joinPassword"
+                value={joinPassword}
+                onChange={(event) => setJoinPassword(event.target.value)}
+                placeholder="Private room password"
+                autoComplete="off"
+                maxLength={128}
+                className="join-input"
+              />
+            )}
+
             <input
               type="text"
               name="room"
@@ -592,13 +673,32 @@ function App() {
 
             <button type="submit" className="join-button">Join room</button>
             <div className="flex flex-col gap-2">
+              <label className="flex items-center gap-2 text-sm text-gray-300">
+                <input
+                  type="checkbox"
+                  checked={privateRoom}
+                  onChange={(event) => setPrivateRoom(event.target.checked)}
+                />
+                Create private room
+              </label>
+              {privateRoom && (
+                <input
+                  type="password"
+                  value={roomPassword}
+                  onChange={(event) => setRoomPassword(event.target.value)}
+                  placeholder="Private room password (6+ characters)"
+                  autoComplete="new-password"
+                  maxLength={128}
+                  className="join-input"
+                />
+              )}
               <button
                 type="button"
                 className="create-room-button"
                 onClick={handleCreateRoom}
                 disabled={roomCreating}
               >
-                {roomCreating ? "Creating…" : "Create room with this name"}
+                {roomCreating ? "Creatingâ€¦" : "Create room with this name"}
               </button>
               <button
                 type="button"
@@ -631,7 +731,7 @@ function App() {
                       onClick={() => removeRecentRoom(recent.room)}
                       aria-label={`Remove ${recent.room} from recent rooms`}
                     >
-                      ×
+                      Ã—
                     </button>
                   </li>
                 ))}
@@ -650,7 +750,7 @@ function App() {
   const statusInfo = STATUS[status] || STATUS.connecting
 
   const loading = (
-    <div className="h-full flex items-center justify-center text-gray-400">Loading…</div>
+    <div className="h-full flex items-center justify-center text-gray-400">Loadingâ€¦</div>
   )
 
   const tab = (value, label) => (
@@ -683,7 +783,7 @@ function App() {
           {statusInfo.label}
         </span>
         <span className="room-access-badge">
-          {accessRole === null ? "Checking access…" : accessRole === "view" ? "View-only access" : "Edit access"}
+          {accessRole === null ? "Checking accessâ€¦" : accessRole === "view" ? "View-only access" : "Edit access"}
         </span>
 
         <span className="text-sm text-gray-400 md:hidden">{users.length} online</span>
@@ -711,10 +811,10 @@ function App() {
                 <div className="share-popover">
                   <p>Creating either link requires a valid invite for future room joins. Links expire in 30 days.</p>
                   <button type="button" onClick={() => handleCopyLink("edit")} disabled={Boolean(shareBusy)}>
-                    {shareBusy === "edit" ? "Creating…" : "Copy edit link"}
+                    {shareBusy === "edit" ? "Creatingâ€¦" : "Copy edit link"}
                   </button>
                   <button type="button" onClick={() => handleCopyLink("view")} disabled={Boolean(shareBusy)}>
-                    {shareBusy === "view" ? "Creating…" : "Copy view-only link"}
+                    {shareBusy === "view" ? "Creatingâ€¦" : "Copy view-only link"}
                   </button>
                   {shareError && <p className="share-error" role="alert">{shareError}</p>}
                 </div>
@@ -905,3 +1005,4 @@ function App() {
 }
 
 export default App
+

@@ -1,4 +1,5 @@
 import "dotenv/config";
+import bcrypt from "bcrypt";
 import { randomUUID, randomInt, createHmac, timingSafeEqual } from "crypto";
 import express from "express";
 import { createServer } from "http";
@@ -115,6 +116,13 @@ const createInviteLimit = rateLimit({
   legacyHeaders: false,
 });
 
+const joinPrivateRoomLimit = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 12,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+});
+
 app.get("/", (_req, res) => {
   res.status(200).json({ message: "Hello World!", success: true });
 });
@@ -226,15 +234,33 @@ app.post("/api/rooms", createRoomLimit, async (req, res, next) => {
   if (!session?.sub) return res.status(401).json({ error: "A valid room session is required." });
 
   const room = req.body?.room;
+  const isPrivate = Boolean(req.body?.privateRoom);
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+
   if (room !== undefined && typeof room !== "string") {
     return res.status(400).json({ error: "Room name must be text." });
   }
   if (room !== undefined && !room.trim()) {
     return res.status(400).json({ error: "Room name cannot be empty." });
   }
+  if (isPrivate && password.length < 6) {
+    return res.status(400).json({ error: "Private rooms require a password of at least 6 characters." });
+  }
+  if (password.length > 128) {
+    return res.status(400).json({ error: "Room password is too long." });
+  }
+
   try {
     const reservedRoom = await reserveRoomName(room?.trim().toLowerCase(), session.sub);
-    return res.status(201).json({ room: reservedRoom });
+    if (isPrivate) {
+      const passwordHash = await bcrypt.hash(password, 12);
+      await ySocketIO.persistence?.provider?.setMeta(reservedRoom, "privateRoom", true);
+      await ySocketIO.persistence?.provider?.setMeta(reservedRoom, "passwordHash", passwordHash);
+    } else {
+      await ySocketIO.persistence?.provider?.setMeta(reservedRoom, "privateRoom", false);
+      await ySocketIO.persistence?.provider?.setMeta(reservedRoom, "passwordHash", "");
+    }
+    return res.status(201).json({ room: reservedRoom, privateRoom: isPrivate });
   } catch (error) {
     if (error.status === 400 || error.status === 409) {
       return res.status(error.status).json({ error: error.message });
@@ -272,6 +298,46 @@ app.post("/api/rooms/:room/invites", createInviteLimit, async (req, res, next) =
       exp: expiresAt,
     });
     return res.status(201).json({ inviteToken, access, expiresAt });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post("/api/rooms/:room/access", joinPrivateRoomLimit, async (req, res, next) => {
+  const session = getRequestSession(req);
+  if (!session?.sub) return res.status(401).json({ error: "A valid room session is required." });
+
+  const { room } = req.params;
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  if (!validRoom(room) || !password) {
+    return res.status(400).json({ error: "A room password is required." });
+  }
+
+  try {
+    const state = await getRoomState(room);
+    if (state.deleted) return res.status(404).json({ error: "This room no longer exists." });
+    const isPrivate = Boolean(await ySocketIO.persistence?.provider?.getMeta(room, "privateRoom"));
+    if (!isPrivate) {
+      return res.status(400).json({ error: "This room is not private." });
+    }
+    const storedHash = await ySocketIO.persistence?.provider?.getMeta(room, "passwordHash");
+    if (!storedHash) {
+      return res.status(500).json({ error: "This room is missing its password configuration." });
+    }
+
+    const valid = await bcrypt.compare(password, storedHash);
+    if (!valid) {
+      return res.status(401).json({ error: "The room password is incorrect." });
+    }
+
+    const expiresAt = Date.now() + 60 * 60 * 1000;
+    const roomAccessToken = signPayload({
+      kind: "room-password",
+      room,
+      userId: session.sub,
+      exp: expiresAt,
+    });
+    return res.status(200).json({ roomAccessToken, expiresAt });
   } catch (error) {
     return next(error);
   }
@@ -416,11 +482,13 @@ async function getRoomState(room) {
       const ownerId = await ySocketIO.persistence?.provider?.getMeta(room, "ownerId");
       const inviteRequired = await ySocketIO.persistence?.provider?.getMeta(room, "inviteRequired");
       const accessVersion = await ySocketIO.persistence?.provider?.getMeta(room, "accessVersion");
+      const privateRoom = await ySocketIO.persistence?.provider?.getMeta(room, "privateRoom");
       return {
         deleted: false,
         ownerId: ownerId || null,
         inviteRequired: Boolean(inviteRequired),
         accessVersion: Number(accessVersion) || 1,
+        privateRoom: Boolean(privateRoom),
         members: [],
       };
     })();
@@ -513,18 +581,26 @@ yjsNamespace.use(async (socket, next) => {
       return next(new Error("This room has been deleted."));
     }
     const invite = verifyPayload(socket.handshake.auth?.inviteToken);
+    const roomPasswordToken = verifyPayload(socket.handshake.auth?.roomAccessToken);
     const inviteIsValid = invite?.kind === "room-invite"
       && invite.room === room
       && invite.ownerId === state.ownerId
       && invite.version === state.accessVersion
       && ["edit", "view"].includes(invite.access);
+    const privateAccessIsValid = state.privateRoom
+      && roomPasswordToken?.kind === "room-password"
+      && roomPasswordToken.room === room
+      && roomPasswordToken.userId === identity.sub;
+    if (state.privateRoom && identity.sub !== state.ownerId && !privateAccessIsValid && !inviteIsValid) {
+      return next(new Error("This private room requires a valid password or invite link."));
+    }
     if (state.inviteRequired && identity.sub !== state.ownerId && !inviteIsValid) {
       return next(new Error("This room requires a valid invite link."));
     }
     socket.data.userId = identity.sub;
     socket.data.access = identity.sub === state.ownerId
       ? "edit"
-      : inviteIsValid ? invite.access : "edit";
+      : inviteIsValid ? invite.access : state.privateRoom && privateAccessIsValid ? "edit" : "edit";
 
     const ip = socket.handshake.address || "unknown";
     const active = ipConnections.get(ip) || 0;

@@ -73,7 +73,14 @@ export function colorFor(name) {
 //   ydoc.getText("monaco")        -> code editor content
 //   ydoc.getXmlFragment("doc")    -> rich-text document content
 //   ydoc.getText("title")         -> document title
-export function useCollab(room, username, color = colorFor(username || ""), firebaseUser = null, inviteToken = "") {
+export function useCollab(
+  room,
+  username,
+  color = colorFor(username || ""),
+  firebaseUser = null,
+  inviteToken = "",
+  roomAccessToken = "",
+) {
   const [session, setSession] = useState(null)
   const [users, setUsers] = useState([])
   const [status, setStatus] = useState("connecting")
@@ -113,7 +120,7 @@ export function useCollab(room, username, color = colorFor(username || ""), fire
           import.meta.env.VITE_CONNECT,
           room,
           ydoc,
-          { autoConnect: true, auth: { sessionToken, inviteToken } }
+          { autoConnect: true, auth: { sessionToken, inviteToken, roomAccessToken } }
         )
 
         const updateUsers = () => {
