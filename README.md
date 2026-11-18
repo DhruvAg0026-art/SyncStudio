@@ -114,10 +114,12 @@ Open the URL shown by Vite, usually `http://localhost:5173`.
 
 ## Checks
 
-Run `npm run lint` and `npm run build` in `Frontend/`. Run `npm run build` and
-`npm test` in `Backend/`; the backend tests start an isolated local server and
-use a temporary LevelDB directory. GitHub Actions runs these checks on pushes
-and pull requests.
+Run `npm run lint`, `npm run build`, and `npm test` in `Frontend/`. Frontend
+unit tests use Vitest and Testing Library. Run `npm run test:e2e` for the
+Playwright two-browser collaboration test; install Chromium first with
+`npx playwright install chromium`. Run `npm run build` and `npm test` in
+`Backend/`; backend tests start an isolated local server and use a temporary
+LevelDB directory. GitHub Actions runs these checks on pushes and pull requests.
 
 ## Rooms and code execution
 

@@ -256,7 +256,7 @@ export function useCollab(
       setStatus("connecting")
       setRoomNotice("")
     }
-  }, [room, hasUsername, firebaseUser?.uid, inviteToken])
+  }, [room, hasUsername, firebaseUser?.uid, inviteToken, roomAccessToken])
 
   const provider = session?.provider
 

@@ -15,6 +15,7 @@ const backendPath = fileURLToPath(new URL("../server.js", import.meta.url))
 let backend
 let dataDirectory
 let baseUrl
+let startupOutput = ""
 
 async function getFreePort() {
   const listener = createServer()
@@ -38,7 +39,7 @@ async function waitForServer() {
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
   }
-  throw new Error("Backend did not become healthy in time.")
+  throw new Error(`Backend did not become healthy in time.\n${startupOutput.slice(-4000)}`)
 }
 
 before(async () => {
@@ -56,7 +57,15 @@ before(async () => {
       FIREBASE_SERVICE_ACCOUNT_JSON: "",
       NODE_ENV: "test",
     },
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  backend.stdout.setEncoding("utf8")
+  backend.stderr.setEncoding("utf8")
+  backend.stdout.on("data", (output) => {
+    startupOutput += output
+  })
+  backend.stderr.on("data", (output) => {
+    startupOutput += output
   })
   await waitForServer()
 })
@@ -89,7 +98,7 @@ test("room creation rejects used names and generates unique readable names", asy
 
   const namedResponse = await createRoom({ room: "test-room-name" })
   assert.equal(namedResponse.status, 201)
-  assert.deepEqual(await namedResponse.json(), { room: "test-room-name" })
+  assert.deepEqual(await namedResponse.json(), { room: "test-room-name", privateRoom: false })
 
   const duplicateResponse = await createRoom({ room: "test-room-name" })
   assert.equal(duplicateResponse.status, 409)
@@ -296,5 +305,69 @@ test("invite roles are enforced during socket authorization and document synchro
     assert.match((await staleInviteRejection).message, /valid invite link/)
   } finally {
     for (const socket of sockets) socket.disconnect()
+  }
+})
+
+test("private rooms require a password and accept the issued room access token", async () => {
+  const createSession = async () => {
+    const response = await fetch(`${baseUrl}/api/session`, { method: "POST" })
+    assert.equal(response.status, 201)
+    return response.json()
+  }
+  const ownerSession = await createSession()
+  const guestSession = await createSession()
+  const room = `private-${randomBytes(4).toString("hex")}`
+  const createResponse = await fetch(`${baseUrl}/api/rooms`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${ownerSession.token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ room, privateRoom: true, password: "correct-horse" }),
+  })
+  assert.equal(createResponse.status, 201)
+  assert.deepEqual(await createResponse.json(), { room, privateRoom: true })
+
+  const accessUrl = `${baseUrl}/api/rooms/${room}/access`
+  const wrongPassword = await fetch(accessUrl, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${guestSession.token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ password: "incorrect" }),
+  })
+  assert.equal(wrongPassword.status, 401)
+
+  const accessResponse = await fetch(accessUrl, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${guestSession.token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ password: "correct-horse" }),
+  })
+  assert.equal(accessResponse.status, 200)
+  const { roomAccessToken } = await accessResponse.json()
+  assert.ok(roomAccessToken)
+
+  const socket = connectSocket(`${baseUrl}/yjs|${room}`, {
+    autoConnect: false,
+    reconnection: false,
+    auth: { sessionToken: guestSession.token, roomAccessToken },
+  })
+  try {
+    await new Promise((resolve, reject) => {
+      socket.once("connect", resolve)
+      socket.once("connect_error", reject)
+      socket.connect()
+    })
+    const joined = await new Promise((resolve) => {
+      socket.emit("room:join", { name: "Private guest", color: "#60a5fa" }, resolve)
+    })
+    assert.equal(joined.error, undefined)
+    assert.ok(joined.state.members.some((member) => member.name === "Private guest"))
+  } finally {
+    socket.disconnect()
   }
 })

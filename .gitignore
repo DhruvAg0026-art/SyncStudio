@@ -30,6 +30,8 @@ lerna-debug.log*
 .vite/
 **/.vite/
 .eslintcache
+Frontend/playwright-report/
+Frontend/test-results/
 
 # OS files
 .DS_Store
